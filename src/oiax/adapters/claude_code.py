@@ -25,6 +25,7 @@ from pathlib import Path
 
 from oiax import build_index, route
 from oiax.corpus import PolicyDirCorpus
+from oiax.router import RouteHit
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,7 @@ FOOTER = (
 )
 
 
-def _render(hits) -> str:
+def _render(hits: list[RouteHit]) -> str:
     """Render route hits as Claude Code additionalContext markdown."""
     lines = [HEADER, ""]
     for hit in hits:
