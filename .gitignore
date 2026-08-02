@@ -6,6 +6,7 @@ __pycache__/
 build/
 dist/
 .venv/
+.venv-*/
 venv/
 
 # Embedding model cache — models are downloaded at runtime, never committed.
