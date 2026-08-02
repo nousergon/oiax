@@ -56,3 +56,8 @@ select = ["E", "F", "I", "W", "UP"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+# sklearn + fastembed deps lack type stubs
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "numpy.*", "fastembed.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
