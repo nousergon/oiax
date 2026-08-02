@@ -9,7 +9,7 @@ These tests verify the public API shape and the core invariants:
 
 from unittest import mock
 
-from oiax.corpus import Corpus, Document
+from oiax.corpus import Document
 from oiax.router import Index, RouteHit, _SemanticScorer, build_index, route
 
 
