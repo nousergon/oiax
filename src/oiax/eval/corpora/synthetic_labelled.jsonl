@@ -1,0 +1,10 @@
+{"prompt": "How do I deploy to production? I have a staging environment set up.", "expected": ["deploy-policy"]}
+{"prompt": "We need a new monitoring alert for the API latency metrics.", "expected": ["observability-policy"]}
+{"prompt": "What's the process for reporting a security vulnerability?", "expected": ["security-policy"]}
+{"prompt": "I need to merge this PR — the CI is green and the reviewer approved.", "expected": ["pull-request-policy"]}
+{"prompt": "Where should I put the new shared utility? It's used by three modules.", "expected": ["code-organization-policy"]}
+{"prompt": "What's for lunch today?", "expected": []}
+{"prompt": "Tell me a joke about programming.", "expected": []}
+{"prompt": "How do I set up a new Python project?", "expected": []}
+{"prompt": "What time is the meeting tomorrow?", "expected": []}
+{"prompt": "Write a haiku about Kubernetes.", "expected": []}

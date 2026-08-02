@@ -57,7 +57,10 @@ def test_claude_code_adapter_emits_valid_hook_json():
         )
 
         # Run the adapter with stdin payload — use prompt matching trigger terms
-        input_payload = json.dumps({"prompt": "how do I scan for secrets during deployment?", "session_id": "test"})
+        input_payload = json.dumps({
+            "prompt": "how do I scan for secrets during deployment?",
+            "session_id": "test",
+        })
         result = subprocess.run(
             [sys.executable, "-m", "oiax.adapters.claude_code", tmp],
             input=input_payload,
