@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oiax"
-version = "0.1.0"
+version = "0.1.1"
 description = "oiax — semantic policy routing for agent fleets. Delivers the right governance context to the right agent at the right turn, by meaning."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ authors = [{ name = "Brian McMahon" }]
 license = { text = "AGPL-3.0" }
 keywords = ["agent", "policy-routing", "governance", "semantic-search", "normative-text"]
 classifiers = [
-    "License :: OSI Approved :: GNU Affero General Public License v3 (AGPL-3.0)",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",

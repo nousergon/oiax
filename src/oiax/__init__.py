@@ -7,5 +7,5 @@ each agent runtime.
 
 from oiax.router import RouteHit, build_index, route  # noqa: F401
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = ["RouteHit", "build_index", "route"]
