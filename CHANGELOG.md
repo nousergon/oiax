@@ -6,6 +6,18 @@ All notable changes to oiax are recorded here. Versions follow
 
 While the major version is `0`, the public API may change between minor versions.
 
+## [0.1.4] — 2026-08-03
+
+### Fixed
+
+- **The 0.1.3 calibration did not reach the Claude Code adapter.** Its argparse
+  carried `--lex-threshold 0.15 --sem-threshold 0.55` as *defaults* — the
+  pre-calibration values — so the one deployment that exists kept routing at the old
+  operating point (recall 0.185) while the library, its tests and its eval harness all
+  measured 0.648. The flags are now true overrides (`default=None`), and the library
+  defaults are the single source of truth. Caught by verifying the live hook output
+  against a direct `route()` call, not by any test.
+
 ## [Unreleased]
 
 ### Changed

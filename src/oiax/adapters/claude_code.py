@@ -88,6 +88,9 @@ def _load_expansions(path: str | None) -> dict[str, str] | None:
 def main(argv: list[str] | None = None) -> int:
     """Read ``UserPromptSubmit`` stdin, route, emit hook JSON.
     CLI: ``<corpus-dir> [--expansions PATH] [--lex-threshold F] [--sem-threshold F]``
+
+    The two threshold flags are OVERRIDES. Omitted, the calibrated library defaults
+    apply; passing one pins that admission floor for this invocation.
     """
     if argv is None:
         argv = sys.argv[1:]
@@ -95,8 +98,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("corpus_dir")
     parser.add_argument("--expansions", default=None)
-    parser.add_argument("--lex-threshold", type=float, default=0.15)
-    parser.add_argument("--sem-threshold", type=float, default=0.55)
+    # Default None, NOT a literal. These were hardcoded 0.15 / 0.55 — the values
+    # `build_index` shipped through 0.1.2 — so when 0.1.3 recalibrated the library
+    # defaults to 0.10 / 0.25, the calibration reached every caller EXCEPT the one
+    # deployment that exists. The adapter silently kept routing at the old operating
+    # point (recall 0.185) while the library, its tests and its eval harness all
+    # measured 0.648. One default, one place.
+    parser.add_argument("--lex-threshold", type=float, default=None)
+    parser.add_argument("--sem-threshold", type=float, default=None)
     parsed = parser.parse_args(argv)
 
     try:
@@ -111,12 +120,15 @@ def main(argv: list[str] | None = None) -> int:
     try:
         corpus = PolicyDirCorpus(parsed.corpus_dir)
         expansions = _load_expansions(parsed.expansions)
-        index = build_index(
-            corpus,
-            expansions=expansions,
-            lex_threshold=parsed.lex_threshold,
-            sem_threshold=parsed.sem_threshold,
-        )
+        overrides = {
+            k: v
+            for k, v in (
+                ("lex_threshold", parsed.lex_threshold),
+                ("sem_threshold", parsed.sem_threshold),
+            )
+            if v is not None
+        }
+        index = build_index(corpus, expansions=expansions, **overrides)
         hits = route(prompt, index)
     except Exception as exc:
         logger.warning("route failed: %s", exc)
