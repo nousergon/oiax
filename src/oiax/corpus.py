@@ -2,8 +2,8 @@
 
 A `Corpus` provides documents to the router. The interface is a Protocol —
 any callable that yields `Document` objects works. One concrete loader
-(`PolicyDirCorpus`) reads markdown files with `**Agent-trigger:**` headers,
-matching the nous-ergon-ops policy directory convention.
+(`PolicyDirCorpus`) reads markdown files with `**Agent-trigger:**` headers —
+one document per file, the trigger line describing when the document applies.
 """
 
 from __future__ import annotations
@@ -47,8 +47,8 @@ class Corpus(Protocol):
 class PolicyDirCorpus:
     """Reads markdown files with `**Agent-trigger:**` headers from a directory.
 
-    Matches the nous-ergon-ops policy directory convention: each `.md` file
-    carries a `**Agent-trigger:**` line whose text after the colon is the
+    One document per `.md` file. Each file carries a `**Agent-trigger:**`
+    line, and the text after the colon is the
     trigger_line. The filename (without extension) is the document `name`.
     """
 

@@ -34,8 +34,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
 
+      # --cov-fail-under is a RATCHET: raise it when a change earns it, never
+      # lower it to make a regression pass. Measured 75% on 2026-08-03; the floor
+      # sits at 70% so an unrelated refactor does not red the build on rounding,
+      # and a real drop still fails. Coverage that is measured and discarded
+      # (which is what this job did before) reports a number nobody defends.
       - name: Run pytest
-        run: python -m pytest -q --cov=oiax --cov-report=term-missing
+        run: python -m pytest -q --cov=oiax --cov-report=term-missing --cov-fail-under=70
 
   lint:
     name: Lint + type-check
