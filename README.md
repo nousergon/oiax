@@ -190,6 +190,78 @@ and a 5-document synthetic smoke corpus that is structurally useful and **cannot
 calibrate anything. Judge labels are evidence, not proof — hand-check a slice before
 treating any rate as authoritative.
 
+## Calibration — the shipped floors are one corpus's answer
+
+`oiax`'s selection floors were measured against its reference corpus: **15
+documents, 52 labelled prompts, one author.** They are not universal properties
+of the algorithm — they are the point where *that* corpus's score distribution
+separated signal from noise.
+
+So the package tells you where they came from, lets you compute your own, and
+says when it is running far from either.
+
+### Where the defaults came from
+
+```python
+>>> from oiax.calibration import SHIPPED
+>>> print(SHIPPED.describe())
+lex=0.1 sem=0.25 rrf_k=60 top_k=2 — measured 2026-08-03 on oiax reference-policies
+(15 documents) under sentence-transformers/all-MiniLM-L6-v2
+```
+
+### Calibrate against your own corpus
+
+```bash
+python -m oiax.eval.route_eval calibrate ./policies/ \
+    --out ./oiax-operating-point.json --corpus-id "acme policies" \
+    < ./labelled.jsonl
+```
+
+It prints the whole grid — **including the rows that lost**, because a table
+showing only the winner hides what it was chosen over — and writes the winner as
+a loadable operating point. The selection rule is stated rather than implied:
+
+1. **Zero false alarms is a hard gate**, not a tiebreak. A configuration that
+   routes a prompt no document governs is excluded whatever else it scores.
+2. Among survivors, highest F1.
+3. Ties go to the **quieter** point.
+
+If nothing clears the gate, that is a finding and the command says so: fix the
+corpus, not the floors.
+
+```bash
+python3 -m oiax.adapters.claude_code ./policies/ --operating-point ./oiax-operating-point.json
+```
+
+A bad path is an **error**, not a silent fallback to the shipped numbers — you
+passed it because you meant to use it.
+
+### No labels? Still supported
+
+Run with the shipped defaults. They are the honest starting point for a corpus
+nobody has calibrated, and the divergence signal below will tell you when they
+have stopped applying.
+
+### The divergence signal
+
+At index build, `oiax` compares your corpus against the one the operating point
+was measured on — document count, separability, and the embedding model — and
+renders any mismatch **into the context paragraph the agent reads**, not into a
+log:
+
+```
+⚠ oiax is running far from its calibration — the selection floors in force were
+measured on a different corpus, so recall and precision here are unmeasured.
+Reasons:
+  - This corpus separates at 0.22; the operating point was calibrated at 0.55.
+    The score distribution here is materially different.
+```
+
+Same reasoning as the lexical-only notice: the layer is running, and its numbers
+do not mean what its documentation says. The thresholds are deliberately crude
+and wide — a divergence detector that fires constantly gets ignored exactly like
+a false-positive route does.
+
 ## Telemetry — is it working?
 
 `oiax` can report on itself. Off by default; one environment variable turns it on:

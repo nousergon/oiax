@@ -43,6 +43,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from oiax import build_index, route
+from oiax.calibration import SHIPPED, OperatingPoint, save_operating_point
 from oiax.corpus import PolicyDirCorpus
 from oiax.router import LEX_FLOOR, SEM_FLOOR, TOP_K
 
@@ -230,10 +231,123 @@ def print_sweep(corpus_dir: str, items: list[dict[str, Any]]) -> None:
             )
 
 
+# Grid searched by `calibrate`. Same rules the shipped default was chosen from,
+# exposed rather than performed once by the maintainer and frozen — that freezing
+# is what handed every adopter a 15-document corpus's answer.
+_LEX_GRID = (0.05, 0.10, 0.15, 0.20)
+_SEM_GRID = (0.20, 0.25, 0.30, 0.35)
+
+
+def calibrate(
+    corpus_dir: str,
+    items: list[dict[str, Any]],
+    *,
+    out: str | None = None,
+    corpus_id: str | None = None,
+) -> int:
+    """Find this corpus's operating point and record what it was measured on.
+
+    Selection rule, in order and stated because a grid search with an unstated
+    objective is a number nobody can argue with:
+
+    1. **Zero false alarms is a hard gate**, not a tiebreak. A configuration that
+       routes a negative is excluded no matter what it scores — a false positive
+       gets the layer tuned out permanently, and a tuned-out layer costs tokens
+       forever while changing nothing.
+    2. Among survivors, highest F1.
+    3. Ties broken toward the QUIETER point (higher floors), for the same reason
+       as (1).
+
+    Prints the full grid, including the rows that lost, because an
+    operating-point table showing only the winner hides what it was chosen over
+    and the next person re-runs the sweep to find out.
+    """
+    from oiax.corpus import PolicyDirCorpus
+    from oiax.router import _MODEL_NAME
+
+    index_probe = build_index(PolicyDirCorpus(corpus_dir))
+    if index_probe.doc_count == 0:
+        print(f"no documents in {corpus_dir}", file=sys.stderr)
+        return 1
+
+    rows: list[tuple[float, float, Metrics]] = []
+    for lex in _LEX_GRID:
+        for sem in _SEM_GRID:
+            m = aggregate(evaluate(corpus_dir, items, lex_threshold=lex, sem_threshold=sem))
+            rows.append((lex, sem, m))
+
+    print(f"{'lex':>5} {'sem':>5} {'recall':>7} {'prec':>7} {'F1':>7} {'top1':>7} {'falarm':>7}")
+    for lex, sem, m in rows:
+        print(
+            f"{lex:>5.2f} {sem:>5.2f} {m.recall:>7.3f} {m.precision:>7.3f} "
+            f"{m.f1:>7.3f} {m.top1_accuracy:>7.3f} {m.false_alarm_rate:>7.3f}"
+        )
+
+    clean = [r for r in rows if r[2].false_alarm_rate == 0.0]
+    if not clean:
+        print(
+            "\nNO CONFIGURATION CLEARS THE ZERO-FALSE-ALARM BAR on this corpus. "
+            "That is a finding, not a failure to calibrate: either the negatives "
+            "are mislabelled, or the routing surfaces overlap too much to "
+            "separate. Fix the corpus, not the floors.",
+            file=sys.stderr,
+        )
+        return 1
+
+    lex, sem, best = max(clean, key=lambda r: (r[2].f1, r[0], r[1]))
+    point = OperatingPoint(
+        lex_floor=lex,
+        sem_floor=sem,
+        rrf_k=SHIPPED.rrf_k,
+        top_k=SHIPPED.top_k,
+        corpus_id=corpus_id or corpus_dir,
+        corpus_size=index_probe.doc_count,
+        corpus_separability=index_probe.corpus_separability,
+        model_id=_MODEL_NAME,
+        measured="",  # stamped by the caller; this module has no clock by design
+        metrics={
+            "recall@2": round(best.recall, 3),
+            "precision": round(best.precision, 3),
+            "f1": round(best.f1, 3),
+            "top1_accuracy": round(best.top1_accuracy, 3),
+            "false_alarm_rate": best.false_alarm_rate,
+            "labelled_prompts": best.n,
+            "negatives": best.n_negative,
+        },
+    )
+
+    print("\nWINNER (zero false alarms, then highest F1, then quieter):")
+    print("  " + point.describe())
+    if not best.n_negative:
+        print(
+            "\n  WARNING: this labelled set contains NO negative prompts, so the "
+            "zero-false-alarm gate passed vacuously. The winning floors are the "
+            "highest-F1 point and nothing has tested whether they stay quiet.",
+            file=sys.stderr,
+        )
+
+    if out:
+        save_operating_point(point, out)
+        print(f"\nwrote {out}")
+    else:
+        print("\n(pass --out PATH to write this as a loadable operating point)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m oiax.eval.route_eval")
-    parser.add_argument("command", choices=["score", "sweep"])
+    parser.add_argument("command", choices=["score", "sweep", "calibrate"])
     parser.add_argument("corpus_dir")
+    parser.add_argument(
+        "--out",
+        default=None,
+        help="calibrate only: write the winning operating point here as JSON",
+    )
+    parser.add_argument(
+        "--corpus-id",
+        default=None,
+        help="calibrate only: a name for this corpus, recorded as provenance",
+    )
     parsed = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     items = load_labelled()
@@ -243,6 +357,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if parsed.command == "sweep":
         print_sweep(parsed.corpus_dir, items)
+    elif parsed.command == "calibrate":
+        return calibrate(parsed.corpus_dir, items, out=parsed.out, corpus_id=parsed.corpus_id)
     else:
         print_summary(evaluate(parsed.corpus_dir, items))
     return 0
