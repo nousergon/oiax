@@ -57,6 +57,27 @@ class EvalResult:
     routed: list[str] = field(default_factory=list)
     missed: list[str] = field(default_factory=list)
     extras: list[str] = field(default_factory=list)
+    #: Documents from the same family as the gold that are WRONG for this
+    #: prompt. Empty when the example carries no sibling label — which is most
+    #: of them, and why HSR has its own denominator.
+    sibling: list[str] = field(default_factory=list)
+
+    @property
+    def has_sibling_label(self) -> bool:
+        return bool(self.sibling)
+
+    @property
+    def harmful(self) -> bool:
+        """True when a labelled wrong sibling was returned.
+
+        This is the failure a relevance-only scorer creates while improving
+        recall: both members of a family score highly, both land in the top-k,
+        and the reader is handed a plausible wrong answer with convincing
+        matched terms. It is not caught by recall, by precision, or by the
+        false-alarm rate — the sibling IS relevant-looking, and the prompt IS
+        governed by something.
+        """
+        return any(s in self.routed for s in self.sibling)
 
     @property
     def is_negative(self) -> bool:
@@ -97,6 +118,8 @@ class Metrics:
     f1: float
     top1_accuracy: float
     false_alarm_rate: float
+    n_sibling: int = 0
+    hsr: float = 0.0
 
 
 def load_labelled(stream: Iterable[str] | None = None) -> list[dict[str, Any]]:
@@ -132,6 +155,7 @@ def evaluate(
                 routed=routed_names,
                 missed=[e for e in expected if e not in routed_names],
                 extras=[r for r in routed_names if r not in expected],
+                sibling=item.get("sibling") or [],
             )
         )
     return results
@@ -154,6 +178,15 @@ def aggregate(results: list[EvalResult]) -> Metrics:
     false_alarm = (
         sum(1 for r in negatives if r.routed) / len(negatives) if negatives else 0.0
     )
+    # HSR has its OWN denominator — only examples carrying a sibling label. A
+    # rate computed over every example would fall simply by adding unlabelled
+    # prompts, which is improvement by dilution.
+    sibling_labelled = [r for r in results if r.has_sibling_label]
+    hsr = (
+        sum(1 for r in sibling_labelled if r.harmful) / len(sibling_labelled)
+        if sibling_labelled
+        else 0.0
+    )
     return Metrics(
         n=len(results),
         n_negative=len(negatives),
@@ -165,6 +198,8 @@ def aggregate(results: list[EvalResult]) -> Metrics:
         f1=f1,
         top1_accuracy=top1,
         false_alarm_rate=false_alarm,
+        n_sibling=len(sibling_labelled),
+        hsr=hsr,
     )
 
 
@@ -199,6 +234,27 @@ def print_summary(results: list[EvalResult]) -> None:
         f"False alarms:    {m.false_alarm_rate:.3f}"
         f"  (share of negative prompts that routed anything)"
     )
+    if m.n_sibling:
+        print(
+            f"HSR@{TOP_K}:           {m.hsr:.3f}"
+            f"  (share of {m.n_sibling} sibling-labelled prompts whose WRONG"
+            f" same-family document was returned)"
+        )
+    else:
+        # Silence here would read as HSR 0. It is not measured.
+        print(
+            "HSR@k:           not measured — no example carries a `sibling` label. "
+            "Recall, precision and the false-alarm rate are all blind to a "
+            "same-family wrong answer."
+        )
+
+    harmful = [r for r in results if r.harmful]
+    if harmful:
+        print(f"\nHARMFUL SIBLINGS ({len(harmful)}):")
+        for r in harmful:
+            got = [s for s in r.sibling if s in r.routed]
+            print(f"  {r.prompt[:66]}")
+            print(f"    wanted {r.expected}, also returned {got}")
 
     failed = [r for r in results if r.missed]
     if failed:

@@ -187,3 +187,56 @@ def test_semantic_scorer_actually_contributes_at_shipped_defaults(labelled):
         if "semantic match" in hit.why
     )
     assert semantic_hits > 0, "no prompt routed on semantic evidence — the floor is inert"
+
+
+# ── harmful siblings ────────────────────────────────────────────────────────
+
+SIBLING_LABELS = REFERENCE_DIR.parent / "reference_siblings.jsonl"
+
+#: The ratchet, not the target. Published work reaches HSR 0 with within-family
+#: representative selection; oiax has none, so this floor holds the line while
+#: that stays true. A change that raises recall by returning more same-family
+#: siblings is a REGRESSION, and no other metric here can see it.
+HSR_CEILING = 0.10
+
+
+@pytest.fixture(scope="module")
+def sibling_labelled():
+    with SIBLING_LABELS.open(encoding="utf-8") as fh:
+        return load_labelled(fh)
+
+
+def test_the_sibling_set_actually_carries_sibling_labels(sibling_labelled):
+    # A sibling file with no sibling labels would make HSR vacuously 0 — a gate
+    # that cannot fail is not a gate.
+    labelled = [i for i in sibling_labelled if i.get("sibling")]
+    assert len(labelled) >= 10
+
+
+def test_every_sibling_is_a_real_document(sibling_labelled):
+    names = {d.name for d in PolicyDirCorpus(str(REFERENCE_DIR)).documents()}
+    for item in sibling_labelled:
+        for s in item.get("sibling", []):
+            assert s in names, f"sibling {s!r} is not in the corpus"
+        for e in item["expected"]:
+            assert e in names, f"gold {e!r} is not in the corpus"
+
+
+def test_a_sibling_is_never_also_gold(sibling_labelled):
+    # The label means "same family and WRONG for this prompt". A document that
+    # is both would make the metric incoherent.
+    for item in sibling_labelled:
+        assert not (set(item.get("sibling", [])) & set(item["expected"]))
+
+
+def test_the_set_keeps_a_both_govern_case(sibling_labelled):
+    # Two members of one family may legitimately both govern. Without this row,
+    # a representative selector that collapses every family to one document
+    # would look like a pure improvement.
+    assert any(len(i["expected"]) > 1 for i in sibling_labelled)
+
+
+def test_harmful_sibling_rate_does_not_regress(sibling_labelled):
+    m = aggregate(evaluate(str(REFERENCE_DIR), sibling_labelled))
+    assert m.n_sibling >= 10, "HSR needs a denominator"
+    assert m.hsr <= HSR_CEILING, f"HSR@2 regressed to {m.hsr:.3f}"

@@ -270,3 +270,102 @@ Two consequences worth stating rather than burying:
   operating point was measured on a different corpus and says so.
 - The published SkillRet baselines are not reproduced here, so these are absolute
   numbers rather than a head-to-head placement.
+
+## `reference_siblings.jsonl` — the harmful-sibling set
+
+Recall, precision and the false-alarm rate are all blind to one failure: routing
+a document from the **right family** that is the **wrong member** of it. The
+sibling is not an irrelevant distractor — it shares the domain and the
+vocabulary, its matched terms look entirely convincing, and the prompt genuinely
+is governed by *something*. A relevance-only scorer improves recall and this
+failure at the same time.
+
+**13 prompts across 6 families.** Each carries `sibling`: the same-family
+document that is plausible and wrong *for that prompt*.
+
+```json
+{"prompt": "A researcher emailed us saying they found a stored XSS...",
+ "expected": ["vulnerability-disclosure-policy"],
+ "sibling": ["incident-response-policy"],
+ "family": "security-report",
+ "note": "Incident-shaped vocabulary with no incident..."}
+```
+
+The families, each with a **mirrored pair** so the metric cannot be satisfied by
+always preferring one member:
+
+| family | members | the confusion |
+|---|---|---|
+| security-report | vulnerability-disclosure · incident-response · dependency | an external report has no severity and no postmortem clock; a scanner CVE has no acknowledgement clock |
+| production-duty | on-call · incident-response | rotation mechanics vs. handling one incident |
+| changing-production | infrastructure-as-code · deployment | a Terraform bump is not application code behind a canary |
+| merge-gate | testing · pull-request | a flaky test is not a PR-body problem |
+| data-governance | access-control · data-retention | revoking a leaver's keys is not a retention window |
+| model-spend | model-usage · cost-management | tier choice vs. right-sizing |
+
+One row deliberately has **two gold documents and no sibling** — a change that
+adds a required field to a public endpoint is governed by *both* deployment and
+api-versioning. Two members of one family may legitimately both govern, and
+without that row a representative selector that collapses every family to one
+document would look like a pure improvement.
+
+### Measured 2026-08-03 at the shipped defaults
+
+| metric | value |
+|---|---|
+| **HSR@2** | **0.083** (1 of 12 sibling-labelled prompts) |
+| recall@2 | 0.714 |
+| top-1 | 0.769 |
+
+`tests/test_eval.py::test_harmful_sibling_rate_does_not_regress` holds a ceiling
+of 0.10 — **a ratchet, not the target.** Published work reaches HSR 0 with
+within-family representative selection; oiax has none, so the ceiling holds the
+line while that stays true.
+
+### Two things this number is not
+
+**It rests on one arguable label.** The single harmful hit is *"which model tier
+for a high-volume classification job"* returning cost-management alongside
+model-usage. Cost is genuinely an input to tier choice, so that label is the
+weakest of the twelve — and it is the only positive. **HSR here is one prompt
+wide**, and a metric whose value is decided by its most debatable label cannot
+drive a design change on its own.
+
+**0.083 is not comparable to the published 0.236.** That figure is over 661 pairs
+in a 7,982-candidate pool. This is 12 prompts over 15 documents with 6 families.
+A small corpus has fewer near-neighbours to confuse, so a low HSR here is partly
+a property of the corpus.
+
+### The decision this records: representative selection is NOT built yet
+
+`#24` proposes resolve → score → select. On the evidence available it stays
+gated, for a reason the benchmark run supplied rather than intuition:
+
+1. **The denominator is too small to grade a change.** One prompt moves HSR by
+   8 points. Any selection change would land inside the noise.
+2. **The measurement that would justify it now exists elsewhere.** SkillRet ships
+   a per-skill taxonomy — `major` / `sub` / `primary_action` / `primary_object` /
+   `domain` — over 6,006 real documents, which is a family signal at a scale
+   where families actually collide. Its 6,006 skills carry only 5,801 distinct
+   names, and those collisions are a second, independent family signal.
+3. **The floors turned out to be inert at that scale** (0.002 spread, 0%
+   abstention over 6,006 documents), which makes the *selection stage* the more
+   likely place for a real gain — and therefore worth measuring properly rather
+   than building on a 12-prompt signal.
+
+So the next step for `#24` is measuring HSR on SkillRet families, not writing a
+resolver. This file is the regression guard that keeps the current behaviour from
+drifting while that happens.
+
+### The set also surfaced four recall misses
+
+Unrelated to siblings, and worth recording because these are squarely-in-domain
+prompts:
+
+- *"Checkout has been degraded for forty minutes and I have not posted anything"* → **routed nothing**, missing incident-response.
+- *"Bump the Terraform module version for our RDS instance"* → routed **api-versioning-policy** on the word *version*, missing infrastructure-as-code.
+- *"An engineer left on Friday, what about their AWS keys"* → **routed nothing**.
+- The both-govern row returned api-versioning and pull-request, missing deployment.
+
+Four misses in thirteen prompts, on a corpus this project wrote, at the
+configuration it calibrated. Recorded rather than smoothed.
