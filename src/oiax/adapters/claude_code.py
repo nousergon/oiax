@@ -26,10 +26,13 @@ from pathlib import Path
 from oiax import build_index, route, semantic_ready
 from oiax.corpus import PolicyDirCorpus
 from oiax.router import RouteHit
+from oiax.telemetry import RouteEvent, emit, install_env_sink, timer
 
 logger = logging.getLogger(__name__)
 
 MIN_PROMPT_CHARS = 12
+
+ADAPTER_NAME = "claude_code"
 
 HEADER = (
     "Policy check — this prompt matches the standing policies below. "
@@ -95,6 +98,12 @@ def main(argv: list[str] | None = None) -> int:
     if argv is None:
         argv = sys.argv[1:]
 
+    # The delivered path starts HERE, not at route(). This process pays imports,
+    # model load and index build every turn; timing only the inner call would
+    # describe a fraction of a percent of what the turn costs.
+    delivered = timer()
+    install_env_sink()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("corpus_dir")
     parser.add_argument("--expansions", default=None)
@@ -108,43 +117,117 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--sem-threshold", type=float, default=None)
     parsed = parser.parse_args(argv)
 
+    overrides = {
+        k: v
+        for k, v in (
+            ("lex_threshold", parsed.lex_threshold),
+            ("sem_threshold", parsed.sem_threshold),
+        )
+        if v is not None
+    }
+
+    def _fail(kind: str, exc: object = None) -> int:
+        """Record a classified failure and exit clean.
+
+        Every early return in this function goes through here. Before, each of
+        them was a bare `return 0` — so a crashed router and a quiet one were
+        the same observation, which is the defect this wiring closes.
+        """
+        if exc is not None:
+            logger.warning("%s: %s", kind, exc)
+        delivered.__exit__()
+        emit(
+            RouteEvent(
+                outcome="failed",
+                failure=kind,  # type: ignore[arg-type]
+                adapter=ADAPTER_NAME,
+                elapsed_ms=delivered.ms,
+                operating_point=overrides,
+            )
+        )
+        return 0
+
     try:
         payload = json.load(sys.stdin)
-    except Exception:
-        return 0
+    except Exception as exc:
+        return _fail("input", exc)
 
     prompt = payload.get("prompt")
     if not isinstance(prompt, str) or len(prompt.strip()) < MIN_PROMPT_CHARS:
+        # Not an error — a prompt too short to route is a legitimate skip. It is
+        # still recorded, as an abstention, so the denominator stays whole.
+        delivered.__exit__()
+        emit(
+            RouteEvent(
+                outcome="abstained",
+                adapter=ADAPTER_NAME,
+                elapsed_ms=delivered.ms,
+                operating_point=overrides,
+            )
+        )
         return 0
 
     try:
         corpus = PolicyDirCorpus(parsed.corpus_dir)
         expansions = _load_expansions(parsed.expansions)
-        overrides = {
-            k: v
-            for k, v in (
-                ("lex_threshold", parsed.lex_threshold),
-                ("sem_threshold", parsed.sem_threshold),
-            )
-            if v is not None
-        }
-        index = build_index(corpus, expansions=expansions, **overrides)
-        hits = route(prompt, index)
     except Exception as exc:
-        logger.warning("route failed: %s", exc)
-        return 0
+        return _fail("corpus_load", exc)
+
+    try:
+        index = build_index(corpus, expansions=expansions, **overrides)
+    except Exception as exc:
+        return _fail("index_build", exc)
+
+    try:
+        inner = timer()
+        hits = route(prompt, index)
+        inner.__exit__()
+    except Exception as exc:
+        return _fail("route", exc)
+
+    degraded = not semantic_ready()
 
     if not hits:
+        delivered.__exit__()
+        emit(
+            RouteEvent(
+                outcome="abstained",
+                corpus_size=index.doc_count,
+                degraded=degraded,
+                adapter=ADAPTER_NAME,
+                elapsed_ms=delivered.ms,
+                route_ms=inner.ms,
+                operating_point=overrides,
+            )
+        )
         return 0
+
+    try:
+        rendered = _render(hits, degraded=degraded)
+    except Exception as exc:
+        return _fail("render", exc)
 
     json.dump(
         {
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
-                "additionalContext": _render(hits, degraded=not semantic_ready()),
+                "additionalContext": rendered,
             }
         },
         sys.stdout,
+    )
+    delivered.__exit__()
+    emit(
+        RouteEvent(
+            outcome="routed",
+            returned=tuple(h.name for h in hits),
+            corpus_size=index.doc_count,
+            degraded=degraded,
+            adapter=ADAPTER_NAME,
+            elapsed_ms=delivered.ms,
+            route_ms=inner.ms,
+            operating_point=overrides,
+        )
     )
     return 0
 
