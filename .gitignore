@@ -29,3 +29,5 @@ htmlcov/
 # started. Contributor-facing guidance belongs in CONTRIBUTING.md.
 AGENTS.md
 CLAUDE.md
+.venv-t/
+.venv-m/

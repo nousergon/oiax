@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oiax"
-version = "0.1.1"
+version = "0.1.2"
 description = "oiax — semantic policy routing for agent fleets. Delivers the right governance context to the right agent at the right turn, by meaning."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -54,7 +54,13 @@ line-length = 100
 select = ["E", "F", "I", "W", "UP"]
 
 [tool.mypy]
-python_version = "3.11"
+# ANALYSIS target, not the supported runtime floor — `requires-python` above still
+# declares >= 3.11 and CI runs pytest on 3.11/3.12/3.13. numpy >= 2.5 ships stubs
+# written with 3.12 `type` statements, which mypy cannot PARSE under a 3.11 target:
+# the error is raised inside numpy's own __init__.pyi and aborts the entire run
+# ("prevented further checking"), reddening every PR regardless of its diff. Per-module
+# ignore_errors does not help — parsing precedes error filtering.
+python_version = "3.12"
 strict = true
 # sklearn + fastembed deps lack type stubs
 [[tool.mypy.overrides]]

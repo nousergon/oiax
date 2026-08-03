@@ -49,7 +49,13 @@ logger = logging.getLogger(__name__)
 
 _EMBEDDER: Any = None  # fastembed.TextEmbedding, lazy-loaded
 _EMBEDDING_DIM: int = 384  # all-MiniLM-L6-v2
-_MODEL_NAME: str = "fastembed/all-MiniLM-L6-v2"
+# The id must be one fastembed publishes in `TextEmbedding.list_supported_models()`.
+# Through 0.1.1 this read "fastembed/all-MiniLM-L6-v2", which fastembed does not
+# recognise: EVERY install raised at load, took the lexical-only branch below, and
+# routed with no semantic scorer at all — the whole point of the package — while
+# reporting nothing beyond one warning on stderr. `test_model_name_is_supported`
+# pins the id against fastembed's own registry so a rename cannot repeat it.
+_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 def _load_embedder() -> Any:
@@ -66,6 +72,18 @@ def _load_embedder() -> Any:
         logger.warning("fastembed unavailable (%s) — routing lexical-only", exc)
         _EMBEDDER = False  # sentinel: tried and failed
     return _EMBEDDER
+
+
+def semantic_ready() -> bool:
+    """True when the embedding model loaded and routing is semantic + lexical.
+
+    False means the scorer is lexical-only. Callers that render routes to a user
+    MUST surface that — a lexical-only route looks identical to a semantic one at
+    the call site, which is how the 0.1.1 model-id defect survived: the warning
+    went to stderr and the Claude Code hook discards stderr. Loading is lazy, so
+    this triggers the load on first call.
+    """
+    return bool(_load_embedder())
 
 
 # ── route result ────────────────────────────────────────────────────────────

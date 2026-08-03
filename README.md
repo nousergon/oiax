@@ -160,7 +160,21 @@ You need oiax when your rule corpus is too large to inject into every context (c
 
 You do **not** need oiax when your corpus fits in a single `CLAUDE.md` — static injection is free and optimal for that case.
 
-For the full positioning, design rationale, and competitive landscape, see the [positioning doc](https://github.com/nousergon/nous-ergon-ops/blob/main/business/product-positioning/oiax.md).
+## Development
+
+```bash
+git clone https://github.com/nousergon/oiax.git
+cd oiax
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+
+pytest                          # test suite
+ruff check src/ tests/          # lint
+mypy src/oiax                   # type check
+```
+
+All three run in CI on Python 3.11, 3.12 and 3.13 and are required to merge. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
