@@ -66,6 +66,47 @@ class MyCorpus:
 hits = route("deploy to prod", build_index(MyCorpus()))
 ```
 
+## MCP server — Cursor, Codex, and any other MCP-capable harness
+
+The Claude Code hook *pushes* routes in on every prompt. Most harnesses have no
+per-prompt hook — Cursor's rules are model-judged with no system-injection point, and
+Codex's are static — but they do speak MCP. `oiax[mcp]` serves the router as two tools
+an agent can call:
+
+| Tool | Returns |
+|---|---|
+| `route_policies(prompt)` | at most two `{name, score, why}` — surface names and matched evidence, **never rule text** |
+| `get_policy(name)` | the whole document, so a rule never arrives without its carve-out |
+
+```bash
+pip install "oiax[mcp]"
+oiax-mcp ./policies/ --expansions ./routing-expansions.json
+```
+
+Point a harness at that command over stdio — `mcpServers` in `~/.cursor/mcp.json`, `mcp_servers` in `~/.codex/config.toml`, or the equivalent:
+
+```json
+{
+  "mcpServers": {
+    "oiax": {
+      "command": "oiax-mcp",
+      "args": ["/absolute/path/to/policies/", "--expansions", "/absolute/path/to/routing-expansions.json"]
+    }
+  }
+}
+```
+
+```toml
+[mcp_servers.oiax]
+command = "oiax-mcp"
+args = ["/absolute/path/to/policies/", "--expansions", "/absolute/path/to/routing-expansions.json"]
+```
+
+**The index lives in the server process**, which is the point: a fresh-process hook pays
+~1.26 s per turn (817 ms of imports, 328 ms of model load, 110 ms of index build, 6 ms of
+routing). Here that happens once at start — measured **248 ms to start on a 15-document
+corpus, then 4.0 ms per `route_policies` call**.
+
 ## Corpus format
 
 Policy files are markdown with an `**Agent-trigger:**` header — a one-line statement of what the document governs. This is used for both lexical matching (TF-IDF) and semantic matching (embeddings).
@@ -182,6 +223,7 @@ class RouteHit:
 | Module | Purpose |
 |---|---|
 | `claude_code.py` | UserPromptSubmit hook adapter |
+| `mcp.py` | MCP server (`oiax-mcp`) — `route_policies` + `get_policy` over stdio |
 | `stdout.py` | Debug adapter — prints hits as text |
 
 ## When you need oiax

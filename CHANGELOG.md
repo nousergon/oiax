@@ -18,6 +18,26 @@ While the major version is `0`, the public API may change between minor versions
   defaults are the single source of truth. Caught by verifying the live hook output
   against a direct `route()` call, not by any test.
 
+## [0.2.0] — 2026-08-03
+
+### Added
+
+- **MCP server adapter** (`oiax[mcp]`, console script `oiax-mcp`). Exposes
+  `route_policies(prompt)` and `get_policy(name)` over stdio, so any MCP-capable
+  harness — Cursor, Codex, Claude Desktop, an SDK agent — can route against a
+  governance corpus. Two tools, not one: routing returns surface names and matched
+  evidence and never rule text, and the agent fetches a whole document only once it
+  judges the route relevant.
+- The index is built once at server start and held in memory. Measured on the
+  15-document reference corpus: **248 ms to start, 4.0 ms per `route_policies` call**,
+  against ~1.26 s per turn on the fresh-process Claude Code hook path.
+- Contract tests drive the server through a real MCP client over the protocol rather
+  than calling the handlers directly.
+
+### Changed
+
+- CI coverage floor 70% → 75% (measured 80%).
+
 ## [Unreleased]
 
 ### Changed
