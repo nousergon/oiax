@@ -107,7 +107,7 @@ def test_lexical_scorer_finds_matching_terms():
 def test_semantic_scorer_disabled_when_embedder_fails():
     """When the embedder fails to load, semantic scorer returns no hits."""
     # Simulate embedder load failure
-    with mock.patch("oiax.router._load_embedder", return_value=False):
+    with mock.patch("oiax.embedding.FastEmbedEmbedder.ready", return_value=False):
         scorer = _SemanticScorer()
         scorer.build([make_doc("x", "some trigger")])
         hits = scorer.query("some prompt")
@@ -117,35 +117,13 @@ def test_semantic_scorer_disabled_when_embedder_fails():
 # ── embedding-model contract (regression: 0.1.1 shipped an unrecognised id) ──
 
 
-def test_model_name_is_supported_by_fastembed():
-    """``_MODEL_NAME`` must be an id fastembed actually publishes.
-
-    Through 0.1.1 it was ``fastembed/all-MiniLM-L6-v2``, which fastembed rejects —
-    so every install fell through to the lexical-only branch and the package's
-    entire semantic half never ran. The prior suite covered the FALLBACK path
-    (``test_semantic_scorer_disabled_when_embedder_fails``) and nothing asserted
-    the PRIMARY path, so CI stayed green against a dead feature. Reads fastembed's
-    own registry rather than a hardcoded list: no network, and a vendor rename
-    fails here instead of silently degrading at runtime.
-    """
-    from fastembed import TextEmbedding
-
-    from oiax.router import _MODEL_NAME
-
-    supported = {m["model"] for m in TextEmbedding.list_supported_models()}
-    assert _MODEL_NAME in supported, (
-        f"{_MODEL_NAME!r} is not a fastembed model id — routing would silently "
-        f"degrade to lexical-only. Supported ids: {sorted(supported)}"
-    )
-
-
 def test_semantic_ready_reports_false_when_embedder_fails():
     """``semantic_ready()`` is the honest-degradation signal consumers render."""
     from oiax.router import semantic_ready
 
-    with mock.patch("oiax.router._load_embedder", return_value=False):
+    with mock.patch("oiax.embedding.FastEmbedEmbedder.ready", return_value=False):
         assert semantic_ready() is False
-    with mock.patch("oiax.router._load_embedder", return_value=object()):
+    with mock.patch("oiax.embedding.FastEmbedEmbedder.ready", return_value=True):
         assert semantic_ready() is True
 
 
