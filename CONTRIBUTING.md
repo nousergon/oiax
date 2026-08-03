@@ -38,6 +38,13 @@ CI runs pytest against Python 3.11, 3.12, and 3.13. All three must pass before m
 - Update tests for behavior changes.
 - CI must be green.
 
-## License
+## License and sign-off
 
-By contributing, you agree that your contributions will be licensed under the AGPL-3.0 license.
+By contributing, you agree that your contributions will be licensed under the MIT
+license.
+
+Every commit must carry a `Signed-off-by:` line certifying the
+[Developer Certificate of Origin](https://developercertificate.org/) — that you wrote
+the patch or otherwise have the right to submit it under MIT. `git commit -s` adds it.
+
+MIT is silent on inbound contribution terms, so the sign-off is what records them.
