@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 import tempfile
+from io import StringIO
 from pathlib import Path
 
 from oiax.router import RouteHit
@@ -124,3 +125,77 @@ def test_claude_code_adapter_flags_lexical_only_routing():
     assert DEGRADED_NOTICE in _render(hits, degraded=True)
     assert DEGRADED_NOTICE not in _render(hits, degraded=False)
     assert DEGRADED_NOTICE not in _render(hits)
+
+
+def test_claude_code_adapter_uses_the_calibrated_library_defaults():
+    """The adapter must not carry its own copy of the selection thresholds.
+
+    Through 0.1.3 it hardcoded `--lex-threshold 0.15 --sem-threshold 0.55` as argparse
+    DEFAULTS — the pre-calibration values. So the 0.1.3 recalibration reached the
+    library, its tests and its eval harness, and did not reach the only deployment
+    that exists: the hook kept routing at the old operating point (recall 0.185)
+    while every measurement said 0.648. A default duplicated into a caller is not a
+    default.
+    """
+    import argparse
+    from unittest import mock
+
+    from oiax.adapters import claude_code
+    from oiax.router import LEX_FLOOR, SEM_FLOOR
+
+    parser_defaults = {}
+
+    real_parse = argparse.ArgumentParser.parse_args
+
+    def capture(self, args=None, namespace=None):
+        parsed = real_parse(self, args, namespace)
+        parser_defaults.update(vars(parsed))
+        return parsed
+
+    captured = {}
+
+    def fake_build_index(corpus, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop after build_index")  # nothing else to exercise
+
+    payload = json.dumps({"prompt": "how do I deploy this to production safely"})
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "deploy-policy.md").write_text(
+            "# deploy\n\n**Agent-trigger:** deploying to production\n\nbody\n", encoding="utf-8"
+        )
+        with mock.patch.object(argparse.ArgumentParser, "parse_args", capture), \
+             mock.patch.object(claude_code, "build_index", fake_build_index), \
+             mock.patch("sys.stdin", StringIO(payload)):
+            claude_code.main([tmp])
+
+    assert parser_defaults["lex_threshold"] is None, "adapter pins its own lexical floor"
+    assert parser_defaults["sem_threshold"] is None, "adapter pins its own semantic floor"
+    assert "lex_threshold" not in captured, "adapter passed a threshold the caller never set"
+    assert "sem_threshold" not in captured
+    # And the library defaults it falls through to are the calibrated ones.
+    assert (LEX_FLOOR, SEM_FLOOR) == (0.10, 0.25)
+
+
+def test_claude_code_adapter_still_honours_an_explicit_threshold():
+    """An explicitly passed flag must reach build_index — the flags stay usable."""
+    from unittest import mock
+
+    from oiax.adapters import claude_code
+
+    captured = {}
+
+    def fake_build_index(corpus, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop after build_index")
+
+    payload = json.dumps({"prompt": "how do I deploy this to production safely"})
+    with tempfile.TemporaryDirectory() as tmp:
+        Path(tmp, "deploy-policy.md").write_text(
+            "# deploy\n\n**Agent-trigger:** deploying to production\n\nbody\n", encoding="utf-8"
+        )
+        with mock.patch.object(claude_code, "build_index", fake_build_index), \
+             mock.patch("sys.stdin", StringIO(payload)):
+            claude_code.main([tmp, "--sem-threshold", "0.42"])
+
+    assert captured.get("sem_threshold") == 0.42
+    assert "lex_threshold" not in captured
