@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "oiax"
-version = "0.1.4"
+version = "0.2.0"
 description = "oiax — semantic policy routing for agent fleets. Delivers the right governance context to the right agent at the right turn, by meaning."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -32,12 +32,20 @@ Homepage = "https://github.com/nousergon/oiax"
 Repository = "https://github.com/nousergon/oiax"
 Issues = "https://github.com/nousergon/oiax/issues"
 
+[project.scripts]
+oiax-mcp = "oiax.adapters.mcp:main"
+
 [project.optional-dependencies]
+# The MCP server is an optional extra, not a core dependency: the Claude Code
+# hook path runs on every prompt and should not import an MCP stack it never
+# uses. `pip install oiax[mcp]` adds it.
+mcp = ["mcp>=2.0.0"]
 dev = [
     "pytest>=7.0",
     "pytest-cov>=4.0",
     "mypy>=1.0",
     "ruff>=0.4",
+    "mcp>=2.0.0",
 ]
 
 [tool.setuptools.packages.find]
