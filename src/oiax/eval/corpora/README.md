@@ -89,3 +89,82 @@ reference corpus — and recall is flat at 0.40 for every threshold from 0.55 do
 to 0.30. A corpus that cannot separate its own documents cannot calibrate a
 separation threshold. `tests/test_eval.py` asserts the reference corpus keeps a
 spread above 0.15 so this failure mode cannot recur unnoticed.
+
+## `reference_tasks.jsonl` — the outcome task set
+
+Everything above measures whether **retrieval** is accurate. This measures
+whether **running the layer changes what the agent does**, which is a different
+question and the only one an adopter has. `oiax.eval.outcome_eval` is the
+harness; this file is its task set.
+
+Each line is a prompt whose response has a **deterministically checkable**
+property:
+
+```json
+{"prompt": "We found a bad regression in prod from this morning's release. What should I do?",
+ "checks": [{"kind": "mentions_any", "terms": ["roll back", "rollback"]}],
+ "governing": ["deployment-policy"],
+ "note": "Rollback is the default response to a production regression..."}
+```
+
+Check kinds: `mentions_all`, `mentions_any`, `mentions_none`, `regex`. All of a
+task's checks must pass. **No model grades anything** — a judge would import its
+own error into the one number this harness exists to produce, and an outcome
+measure is worth having precisely because it is harder to fool than a retrieval
+metric.
+
+**Six positive tasks and two negatives.** The tasks are chosen so the governing
+rule contradicts the prompt's own framing: the flaky-test prompt proposes a
+retry the policy forbids, the coverage prompt asks for a reduction the policy
+forbids outright, the sev1 prompt states the exact silence the policy was
+written against. A task an agent answers correctly without the document
+measures nothing. The two negatives penalise an arm that injects on every turn.
+
+### Running it
+
+```python
+from oiax import build_index
+from oiax.corpus import PolicyDirCorpus
+from oiax.eval.outcome_eval import (
+    NoRoutingArm, OiaxArm, CallableArm, HARNESS_ARM,
+    load_tasks, run_outcome_eval, format_report,
+)
+
+tasks = load_tasks(open("reference_tasks.jsonl"))
+index = build_index(PolicyDirCorpus("reference-policies"))
+
+report = run_outcome_eval(
+    tasks,
+    [NoRoutingArm(), OiaxArm(index=index), CallableArm(fn=your_harness, name=HARNESS_ARM)],
+    respond=your_model_call,                      # (prompt, context) -> response
+    conditions={"corpus": "reference-policies", "tasks": "reference_tasks.jsonl",
+                "model": "<the model you ran>"},
+)
+print(format_report(report))
+```
+
+**oiax takes no model dependency**, here or anywhere: `respond` is supplied by
+the caller. That is what keeps the package provider-free and what makes a third
+arm driving somebody else's harness possible at all.
+
+### Two refusals built into the report
+
+- **No verdict without the host-harness arm.** "Better than injecting nothing"
+  is a bar no adopter cares about — their harness already selects context for
+  free (Claude Code loads skills on the model's judgment; Cursor model-judges
+  its rules). Without an arm named `harness`, `report.verdict` says so and
+  declines. A two-arm result is a measurement, not an answer.
+- **Quality and cost are reported together.** `delta_vs` returns both the
+  pass-rate delta and the injected-bytes-per-task delta. Equal quality at triple
+  the payload is a regression, and the second number is the only thing that says
+  so. Cost is in **bytes** by default — exact and provider-neutral; a token count
+  is one provider's opinion about the same bytes, so `count_tokens` is optional
+  and supplied by the caller.
+
+### No result is published here yet
+
+Running this needs a model, and a number without its corpus, task set and model
+is not reproducible — `format_report` warns when conditions are absent and the
+bound is printed with every result. When a run happens, its table goes here with
+all three conditions named, **including if routing makes no measurable
+difference**, which would be worth more than any recall figure in this repo.
