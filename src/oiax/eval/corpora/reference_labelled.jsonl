@@ -1,0 +1,52 @@
+{"prompt": "the checkout service is throwing 500s for about a third of requests and it started ten minutes ago", "expected": ["incident-response-policy"]}
+{"prompt": "we lost the whole eu region for twenty minutes last night, what do I owe people now", "expected": ["incident-response-policy", "documentation-policy"]}
+{"prompt": "who decides whether this counts as a sev2 or a sev3", "expected": ["incident-response-policy"]}
+{"prompt": "I want to push this hotfix straight to prod on a friday afternoon", "expected": ["deployment-policy"]}
+{"prompt": "the new build is up at 5 percent and latency looks worse, do I pull it back or push through", "expected": ["deployment-policy"]}
+{"prompt": "what does our rollout look like between staging and live traffic", "expected": ["deployment-policy"]}
+{"prompt": "how many people need to sign off before I can land this", "expected": ["pull-request-policy"]}
+{"prompt": "this branch has been sitting for three weeks with no reviewer", "expected": ["pull-request-policy"]}
+{"prompt": "do I need to link the ticket in the description or is the branch name enough", "expected": ["pull-request-policy"]}
+{"prompt": "a researcher emailed us saying they found a way to read other tenants' invoices", "expected": ["vulnerability-disclosure-policy"]}
+{"prompt": "how long do we sit on a confirmed exploit before we tell anyone", "expected": ["vulnerability-disclosure-policy"]}
+{"prompt": "should I make them sign something before I look at their report", "expected": ["vulnerability-disclosure-policy"]}
+{"prompt": "engineer left on friday and still has an admin token", "expected": ["access-control-policy"]}
+{"prompt": "can I just give the batch job the same role the api uses", "expected": ["access-control-policy"]}
+{"prompt": "we have a static key checked into the deploy config that nobody has changed in a year", "expected": ["access-control-policy"]}
+{"prompt": "customer emailed asking us to wipe everything we have on them", "expected": ["data-retention-policy"]}
+{"prompt": "how long are we supposed to hang onto request logs", "expected": ["data-retention-policy"]}
+{"prompt": "our backups keep records that we already deleted from the primary, is that a problem", "expected": ["data-retention-policy"]}
+{"prompt": "I want to rename a field in the response payload", "expected": ["api-versioning-policy"]}
+{"prompt": "we're dropping the old endpoint next sprint, who do we have to tell", "expected": ["api-versioning-policy"]}
+{"prompt": "is changing the default page size going to break anyone", "expected": ["api-versioning-policy"]}
+{"prompt": "this spec fails maybe one run in twenty and everyone just hits rerun", "expected": ["testing-policy"]}
+{"prompt": "do I need an integration test if my change only touches one function that calls out to stripe", "expected": ["testing-policy"]}
+{"prompt": "my change drops the coverage number by two points", "expected": ["testing-policy"]}
+{"prompt": "dependabot opened eleven upgrade prs overnight", "expected": ["dependency-policy"]}
+{"prompt": "the scanner is complaining about a package we don't even import directly", "expected": ["dependency-policy"]}
+{"prompt": "this library is exactly what I need but it's under a copyleft licence", "expected": ["dependency-policy"]}
+{"prompt": "we shipped a new worker and nothing about it shows up anywhere", "expected": ["observability-policy"]}
+{"prompt": "the dashboard is green but I think the collector died on saturday", "expected": ["observability-policy"]}
+{"prompt": "what should a new service be emitting on day one", "expected": ["observability-policy"]}
+{"prompt": "nobody picked up the page at 3am and it escalated twice", "expected": ["on-call-policy"]}
+{"prompt": "I'm covering next week and I have no idea what the previous shift was dealing with", "expected": ["on-call-policy"]}
+{"prompt": "should this alert wake somebody up or wait until morning", "expected": ["on-call-policy", "observability-policy"]}
+{"prompt": "the runbook says to click a button that doesn't exist anymore", "expected": ["documentation-policy"]}
+{"prompt": "we picked postgres over dynamo last quarter and nobody remembers why", "expected": ["documentation-policy"]}
+{"prompt": "the readme describes a flag we removed two releases ago", "expected": ["documentation-policy"]}
+{"prompt": "our bill jumped forty percent this month and I can't see why", "expected": ["cost-management-policy"]}
+{"prompt": "this nightly job runs on a big on-demand box for twenty minutes a day", "expected": ["cost-management-policy"]}
+{"prompt": "sales wants us to commit to a year of reserved capacity", "expected": ["cost-management-policy"]}
+{"prompt": "someone resized the queue by hand in the console during the outage", "expected": ["infrastructure-as-code-policy"]}
+{"prompt": "two repos both seem to define the same bucket", "expected": ["infrastructure-as-code-policy"]}
+{"prompt": "where should the terraform for the new cluster live", "expected": ["infrastructure-as-code-policy"]}
+{"prompt": "which model should I use for a job that just pulls dates out of emails", "expected": ["model-usage-policy"]}
+{"prompt": "the summarizer constructs an openai client inline in the handler", "expected": ["model-usage-policy"]}
+{"prompt": "we're putting the user's message at the top of the prompt above the instructions", "expected": ["model-usage-policy"]}
+{"prompt": "can I send raw support tickets to an external summarisation api", "expected": ["model-usage-policy", "data-retention-policy"]}
+{"prompt": "I need to grant a contractor read access for two weeks", "expected": ["access-control-policy"]}
+{"prompt": "what's the process for taking the api v1 offline", "expected": ["api-versioning-policy", "documentation-policy"]}
+{"prompt": "the canary passed but the full rollout regressed, and I need to decide fast", "expected": ["deployment-policy", "incident-response-policy"]}
+{"prompt": "what's a good name for our new internal chat bot", "expected": []}
+{"prompt": "can you explain how tf-idf cosine similarity works", "expected": []}
+{"prompt": "what time is the all hands on thursday", "expected": []}

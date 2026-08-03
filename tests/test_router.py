@@ -147,3 +147,76 @@ def test_semantic_ready_reports_false_when_embedder_fails():
         assert semantic_ready() is False
     with mock.patch("oiax.router._load_embedder", return_value=object()):
         assert semantic_ready() is True
+
+
+# ── selection rule: reciprocal-rank fusion (I5) ─────────────────────────────
+
+
+class _StubScorer:
+    """A scorer stand-in returning a fixed ranking, for fusion unit tests."""
+
+    def __init__(self, hits):
+        self._hits = hits
+
+    def query(self, prompt):  # noqa: ARG002 — fixed ranking by construction
+        return self._hits
+
+
+def _index_with(lex_hits, sem_hits, **kw):
+    from oiax.router import Index
+
+    return Index(
+        lexical=_StubScorer(lex_hits),
+        semantic=_StubScorer(sem_hits),
+        doc_count=3,
+        build_time_ms=0.0,
+        **kw,
+    )
+
+
+def test_rrf_prefers_the_document_both_scorers_rank():
+    """A document ranked 2nd by BOTH scorers beats one ranked 1st by only one.
+
+    This is the property hybrid retrieval is chosen for, and the union-by-max-score
+    rule shipped through 0.1.2 cannot express it: it would return the single high
+    raw score first, because it compares TF-IDF cosine against embedding cosine as
+    though they were the same quantity.
+    """
+    idx = _index_with(
+        lex_hits=[("only-lexical", 0.90, ["term"]), ("both", 0.30, ["term"])],
+        sem_hits=[("only-semantic", 0.60, ["semantic match"]), ("both", 0.30, ["semantic match"])],
+    )
+    hits = idx.route("anything")
+    assert hits[0].name == "both"
+
+
+def test_route_caps_at_top_k():
+    """At most `top_k` names are returned — a route is a hint, not a reading list."""
+    lex = [(f"doc-{i}", 0.9 - i / 100, ["term"]) for i in range(10)]
+    idx = _index_with(lex_hits=lex, sem_hits=[])
+    assert len(idx.route("anything")) == 2
+    assert len(_index_with(lex_hits=lex, sem_hits=[], top_k=5).route("anything")) == 5
+
+
+def test_route_abstains_when_no_scorer_admits_anything():
+    """No candidates means no hits — a pure ranking could not express abstention."""
+    assert _index_with(lex_hits=[], sem_hits=[]).route("unrelated prompt") == []
+
+
+def test_route_merges_why_across_scorers():
+    """A hit found by both scorers shows both kinds of evidence."""
+    idx = _index_with(
+        lex_hits=[("both", 0.4, ["deploy"])],
+        sem_hits=[("both", 0.3, ["semantic match"])],
+    )
+    (hit,) = idx.route("deploy something")
+    assert hit.why == ["deploy", "semantic match"]
+    assert hit.score == 0.4  # best RAW score, not the fusion score
+
+
+def test_route_hit_score_is_a_raw_score_not_the_fusion_score():
+    """`score` stays human-readable in [0, 1]; fusion scores are ~0.016 and are not."""
+    idx = _index_with(lex_hits=[("a", 0.42, ["x"])], sem_hits=[])
+    (hit,) = idx.route("x")
+    assert 0.0 <= hit.score <= 1.0
+    assert hit.score == 0.42

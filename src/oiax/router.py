@@ -1,8 +1,9 @@
 """Semantic policy router — the transferable core.
 
 `route(prompt) -> list[RouteHit]` scores a free-text prompt against a
-governance corpus using hybrid retrieval (semantic cosine via local ONNX
-embeddings + lexical TF-IDF with a union fallback).
+governance corpus using hybrid retrieval — semantic cosine via local ONNX
+embeddings plus lexical TF-IDF — combined by reciprocal-rank fusion and
+capped at the top two names.
 
 The secret sauce is the retrieval design for normative text, not the
 algorithm. The four load-bearing decisions (see oiax positioning doc §4):
@@ -10,16 +11,30 @@ algorithm. The four load-bearing decisions (see oiax positioning doc §4):
 1. **Whole-document delivery, never chunks.** A rule and its carve-out
    are semantically distant but logically inseparable.
 2. **Precision over recall, asymmetric errors.** A miss degrades to the
-   status quo; a false positive actively degrades the layer.
+   status quo; a false positive actively degrades the layer. Implemented as
+   the `top_k=2` cap and the zero-false-alarm bar on the negative prompts,
+   NOT as a high score threshold — a threshold high enough to guarantee
+   precision silences the semantic scorer entirely, which is how 0.1.2
+   reached precision 0.769 at recall 0.185. Precision bought by not
+   answering is not precision.
 3. **Surface names, never rules.** A route is probabilistic; showing
    matched terms makes a bad match dismissible at a glance.
 4. **Pin what the prompt cannot reveal; route what it can.** The
    always-resident / on-demand split.
 
-Measured 2026-07-29 over 120 judge-labelled real prompts: lexical-only
-recall 19%, precision ~50%. The hybrid scorer holds 15/15 positives,
-0/10 negatives. Warm route ~6ms; cold index build ~700ms, cached
+Measured 2026-08-03 on the shipped reference corpus (15 documents, 52
+labelled prompts — `eval/corpora/README.md` records the sweep): recall@2
+0.648, top-1 accuracy 0.673, precision 0.603, zero false alarms on the
+negative prompts. Warm route ~6ms; cold index build ~700ms, cached
 process-wide.
+
+**Superseded claim, kept visible on purpose.** Through 0.1.2 this docstring
+read "the hybrid scorer holds 15/15 positives, 0/10 negatives". No shipped
+version ever ran the hybrid: 0.1.0-0.1.1 named an embedding model fastembed
+does not publish, and 0.1.2 fixed the name but kept a semantic floor (0.55)
+above every correct match a real corpus produces (0.40-0.48). Both were
+lexical-only in practice, which is what the 19% recall measured over 120
+judge-labelled prompts on 2026-07-29 was actually measuring.
 
 This module is a port of `nous-ergon-ops/scripts/policy_router.py`
 (505 lines, 2026-07-28), stripped of every NE-specific path and
@@ -56,6 +71,27 @@ _EMBEDDING_DIM: int = 384  # all-MiniLM-L6-v2
 # reporting nothing beyond one warning on stderr. `test_model_name_is_supported`
 # pins the id against fastembed's own registry so a rename cannot repeat it.
 _MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
+
+# ── selection defaults ──────────────────────────────────────────────────────
+# Calibrated 2026-08-03 against `eval/corpora/reference-policies` (15 documents)
+# and `reference_labelled.jsonl` (52 prompts). The full sweep, including the rules
+# that lost, is recorded in `eval/corpora/README.md` and is reproducible with
+# `python -m oiax.eval.route_eval sweep <corpus-dir> < labelled.jsonl`.
+#
+# The floors are ADMISSION thresholds (is this document a candidate?), not the
+# selection rule — `Index.route` selects by reciprocal-rank fusion. Through 0.1.2
+# these were 0.15 / 0.55 and were the selection rule; that scored recall 0.185,
+# with the semantic floor sitting ABOVE every correct match the corpus produces.
+#
+# Chosen over lex=0.05 (recall 0.704, F1 0.623), which scored marginally better on
+# recall and WORSE on false alarms: it routed a policy for 1 of the 3 negative
+# prompts, where 0.10 routes nothing for any of them. Decision 2 of the product
+# contract — asymmetric errors, a false positive degrades the layer more than a
+# miss — settles a tie this close toward the quieter operating point.
+LEX_FLOOR: float = 0.10
+SEM_FLOOR: float = 0.25
+RRF_K: int = 60
+TOP_K: int = 2
 
 
 def _load_embedder() -> Any:
@@ -98,7 +134,11 @@ class RouteHit:
     """
 
     name: str
-    score: float  # [0, 1], union of semantic + lexical
+    # The best RAW scorer score that admitted this document — a [0, 1] number a
+    # reader can interpret. Hits are ORDERED by reciprocal-rank fusion (see
+    # ``Index.route``), not by this field, because the two scorers' raw scores are
+    # not on a common scale and sorting a union by them compares apples to oranges.
+    score: float
     why: list[str] = field(default_factory=list)  # matched terms/segments
 
 
@@ -228,35 +268,62 @@ class _SemanticScorer:
 class Index:
     """A built index ready for routing.
 
-    Holds the two scorers (lexical + semantic) and metadata. Union fallback:
-    if the semantic scorer returns nothing, the lexical scorer's results are
-    used alone — and vice versa.
+    Holds the two scorers (lexical + semantic), the fusion parameters, and
+    metadata. Either scorer may return nothing — a lexical-only or semantic-only
+    result set fuses to itself, so neither half is load-bearing on its own.
     """
 
     lexical: _LexicalScorer
     semantic: _SemanticScorer
     doc_count: int
     build_time_ms: float
+    rrf_k: int = RRF_K
+    top_k: int = TOP_K
 
     def route(self, prompt: str) -> list[RouteHit]:
-        """Route a prompt against the index.
+        """Route a prompt against the index, returning at most ``top_k`` hits.
 
-        Returns hits from the union of lexical and semantic scorers,
-        deduplicated by name, sorted by score descending.
+        **Reciprocal-rank fusion**, not a union sorted by raw score. Each scorer
+        contributes ``1 / (rrf_k + rank)`` per document it ranks; the fused scores
+        are summed and the top ``top_k`` documents are returned. A document ranked
+        modestly by BOTH scorers therefore beats one ranked top by a single scorer,
+        which is the behaviour hybrid retrieval is chosen for.
+
+        Why fusion rather than comparing scores directly: TF-IDF cosine and
+        embedding cosine are not on a common scale, and an absolute cutoff on
+        either is corpus-dependent. Shipped through 0.1.2 the defaults were
+        ``lex 0.15 / sem 0.55``; measured on the reference corpus that yielded
+        recall 0.185 — and NO semantic hit could ever clear 0.55, so the hybrid
+        was lexical-only in practice on any corpus resembling it. Fusion plus low
+        admission floors measures recall 0.704 on the same corpus
+        (``src/oiax/eval/corpora/README.md`` records the sweep). Rank fusion is
+        scale-free: it survives a corpus whose absolute scores sit anywhere.
+
+        The per-scorer thresholds still apply, but as ADMISSION FLOORS — "is this
+        document a candidate at all" — rather than as the selection rule. That is
+        what keeps abstention possible: a prompt no scorer admits routes to
+        nothing, which a pure ranking cannot express.
         """
         lex_hits = self.lexical.query(prompt)
         sem_hits = self.semantic.query(prompt)
 
-        # Union by name — keep the higher score
-        seen: dict[str, RouteHit] = {}
-        for name, score, why in lex_hits:
-            seen[name] = RouteHit(name=name, score=score, why=why)
-        for name, score, why in sem_hits:
-            if name not in seen or score > seen[name].score:
-                seen[name] = RouteHit(name=name, score=score, why=why)
+        fused: dict[str, float] = {}
+        best: dict[str, float] = {}
+        why: dict[str, list[str]] = {}
+        for hits in (lex_hits, sem_hits):
+            for rank, (name, score, reasons) in enumerate(hits):
+                fused[name] = fused.get(name, 0.0) + 1.0 / (self.rrf_k + rank + 1)
+                if score > best.get(name, 0.0):
+                    best[name] = score
+                for reason in reasons:
+                    if reason not in why.setdefault(name, []):
+                        why[name].append(reason)
 
-        hits = sorted(seen.values(), key=lambda h: h.score, reverse=True)
-        return hits
+        ranked = sorted(fused, key=lambda n: (fused[n], best[n]), reverse=True)
+        return [
+            RouteHit(name=name, score=best[name], why=why.get(name, []))
+            for name in ranked[: self.top_k]
+        ]
 
 
 # ── public API ──────────────────────────────────────────────────────────────
@@ -266,8 +333,10 @@ def build_index(
     corpus: Corpus,
     *,
     expansions: dict[str, str] | None = None,
-    lex_threshold: float = 0.15,
-    sem_threshold: float = 0.55,
+    lex_threshold: float = LEX_FLOOR,
+    sem_threshold: float = SEM_FLOOR,
+    rrf_k: int = RRF_K,
+    top_k: int = TOP_K,
 ) -> Index:
     """Build a routing index from a corpus.
 
@@ -277,8 +346,15 @@ def build_index(
         expansions: Optional per-document query-expansion phrases. Keys
                     are document names; values are additional text
                     appended to the trigger line for lexical matching.
-        lex_threshold: Minimum TF-IDF cosine score for a lexical hit.
-        sem_threshold: Minimum embedding cosine score for a semantic hit.
+        lex_threshold: ADMISSION FLOOR for the lexical scorer — the minimum
+                       TF-IDF cosine at which a document becomes a candidate.
+                       Not a selection gate; see `Index.route`.
+        sem_threshold: Admission floor for the semantic scorer (embedding cosine).
+        rrf_k: Reciprocal-rank-fusion constant. 60 is the value from Cormack et
+               al. (2009) and the one Elasticsearch/OpenSearch use; measured
+               here, results are flat for k between 10 and 60.
+        top_k: Maximum hits returned. Two, because a route is a hint the reader
+               must be able to dismiss at a glance — a list of six is not read.
 
     Returns:
         An `Index` ready for `route()` calls. Cold build ~700ms; the
@@ -303,6 +379,8 @@ def build_index(
         semantic=semantic,
         doc_count=len(docs),
         build_time_ms=elapsed,
+        rrf_k=rrf_k,
+        top_k=top_k,
     )
 
 

@@ -29,12 +29,12 @@ Requires Python ≥ 3.11. On first use, a ~90MB ONNX embedding model downloads a
 from oiax import build_index, route
 from oiax.corpus import PolicyDirCorpus
 
-# Load from a directory of markdown files with **Agent-trigger:** headers
-# (the nous-ergon-ops policy directory convention)
+# Load from a directory of markdown files, each carrying an **Agent-trigger:**
+# line (see "Corpus format" below)
 corpus = PolicyDirCorpus("./policies/")
 index = build_index(corpus)
 
-# Route a prompt — returns hits sorted by score descending
+# Route a prompt — at most two hits, ranked by reciprocal-rank fusion
 hits = route("How do I deploy to production?", index)
 for hit in hits:
     print(f"{hit.name} ({hit.score:.2f}): {', '.join(hit.why)}")
@@ -103,12 +103,33 @@ The `PolicyDirCorpus` loader reads all `*.md` files in a directory. The filename
 
 On every prompt, the adapter routes the prompt text against the policy corpus and injects a context paragraph naming the policies that may apply — with the matched terms, so a bad match is dismissible at a glance. Never blocks: any error exits 0 silently.
 
+## How selection works
+
+Both scorers rank every document. Their rankings are combined by **reciprocal-rank
+fusion** — each scorer contributes `1 / (60 + rank)` — and the top two documents are
+returned. A document ranked moderately by *both* scorers therefore beats one ranked
+first by only one, which is the whole reason to run a hybrid.
+
+`lex_threshold` and `sem_threshold` are **admission floors** ("is this document a
+candidate at all"), not the selection rule. They are what makes abstention possible:
+a prompt neither scorer admits routes to nothing.
+
+Absolute score cutoffs are deliberately not the selection rule. TF-IDF cosine and
+embedding cosine are not on a common scale, and the right cutoff for either moves
+with the corpus. Through 0.1.2 oiax selected on absolute cutoffs with a semantic
+threshold of 0.55; on the reference corpus, correct semantic matches score 0.40–0.48,
+so the semantic half never fired and recall sat at 0.185. Rank fusion is scale-free.
+
+Defaults are calibrated, not chosen: `src/oiax/eval/corpora/README.md` records the
+sweep, the operating point, and what it was picked over.
+
 ## Evaluation harness
 
-Measure recall and precision against labelled ground truth:
+Measure routing quality against labelled ground truth:
 
 ```bash
-python -m oiax.eval.route_eval score ./policies/ < labelled.jsonl
+python -m oiax.eval.route_eval score ./policies/ < labelled.jsonl   # shipped config
+python -m oiax.eval.route_eval sweep ./policies/ < labelled.jsonl   # the full grid
 ```
 
 The labelled file is JSONL — one JSON object per line:
@@ -118,7 +139,15 @@ The labelled file is JSONL — one JSON object per line:
 {"prompt": "What's for lunch?", "expected": []}
 ```
 
-A synthetic labelled corpus ships at `oiax/eval/corpora/`. Judge labels are evidence, not proof — hand-check a slice before treating the rate as authoritative.
+Reported: `recall@2`, `precision`, `F1`, `top-1 accuracy`, and the false-alarm rate over
+negative prompts (`"expected": []`). Read precision against the two-hit cap — with one
+expected label it cannot exceed 0.5 for that prompt.
+
+Two corpora ship at `oiax/eval/corpora/`: a 15-document **reference** corpus with 52
+labelled prompts (the calibration set — recall@2 0.648, top-1 0.673, zero false alarms),
+and a 5-document synthetic smoke corpus that is structurally useful and **cannot**
+calibrate anything. Judge labels are evidence, not proof — hand-check a slice before
+treating any rate as authoritative.
 
 ## API
 
@@ -127,7 +156,8 @@ A synthetic labelled corpus ships at `oiax/eval/corpora/`. Judge labels are evid
 | Callable | Signature | Returns |
 |---|---|---|
 | `route` | `route(prompt: str, index: Index | None = None) -> list[RouteHit]` | Scored hits |
-| `build_index` | `build_index(corpus: Corpus, *, expansions, lex_threshold, sem_threshold) -> Index` | Built index |
+| `build_index` | `build_index(corpus, *, expansions, lex_threshold, sem_threshold, rrf_k, top_k) -> Index` | Built index |
+| `semantic_ready` | `semantic_ready() -> bool` | `False` when the embedding model failed to load and routing is lexical-only — surface it, do not swallow it |
 
 ### `RouteHit`
 
@@ -135,8 +165,8 @@ A synthetic labelled corpus ships at `oiax/eval/corpora/`. Judge labels are evid
 @dataclass(frozen=True)
 class RouteHit:
     name: str       # document name (surface name only, never body text)
-    score: float    # [0, 1]
-    why: list[str]  # matched terms/segments
+    score: float    # best RAW scorer score, [0, 1] — hits are ORDERED by fusion, not by this
+    why: list[str]  # matched terms, and/or "semantic match"
 ```
 
 ### `oiax.corpus`
