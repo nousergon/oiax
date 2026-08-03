@@ -386,6 +386,26 @@ def build_index(
         embedding model is cached process-wide after first load.
     """
     point = operating_point or SHIPPED
+    if operating_point is not None:
+        # An EXPLICITLY supplied operating point whose model disagrees with the
+        # installed embedder is a caller error, not a runtime condition: they
+        # passed both, so they meant both, and cosine distributions are not
+        # comparable between models. Carrying floors across a model change means
+        # running with a number measured on a system that no longer exists —
+        # silently, because the router still returns results.
+        #
+        # The SHIPPED default against a swapped embedder is NOT an error. That
+        # is the ordinary adopter case and it goes to the divergence signal
+        # (§4.5a), which reports rather than refuses.
+        running = get_embedder().model_id()
+        if point.model_id and running and point.model_id != running:
+            raise ValueError(
+                f"operating point was calibrated under {point.model_id!r} but the "
+                f"installed embedder is {running!r}. Cosine distributions are not "
+                f"comparable between models — recalibrate with "
+                f"`route_eval calibrate`, or drop the operating point to fall back "
+                f"to the shipped defaults and the divergence signal."
+            )
     # Explicit kwargs override the operating point; the operating point overrides
     # the shipped default. Three layers, one direction, no silent precedence.
     lex_threshold = point.lex_floor if lex_threshold is None else lex_threshold

@@ -26,6 +26,7 @@ from oiax.embedding import (
     DEFAULT_MODEL_ID,
     Embedder,
     FastEmbedEmbedder,
+    UnknownEmbeddingModel,
     get_embedder,
     set_embedder,
 )
@@ -137,10 +138,19 @@ def test_model_id_is_one_the_provider_publishes():
     )
 
 
-def test_embed_returns_empty_rather_than_raising_when_unavailable():
+def test_an_unpublished_id_raises_from_embed_too_not_only_from_ready():
+    """Corrected in #19.
+
+    This test used to assert that an unpublished model id produced an empty
+    result — i.e. that it DEGRADED. That was the defect, not the contract: it
+    made a configuration error look exactly like a machine without the model
+    cache. Both entry points now raise, because a caller who never checks
+    `ready()` must not get silence either.
+    """
+    pytest.importorskip("fastembed")
     embedder = FastEmbedEmbedder(model_id="not-a-real-model-id-at-all")
-    assert len(embedder.embed(["x"])) == 0
-    assert embedder.ready() is False
+    with pytest.raises(UnknownEmbeddingModel):
+        embedder.embed(["x"])
 
 
 def test_embed_of_nothing_is_empty():
@@ -210,3 +220,47 @@ def test_the_router_names_no_provider_model_id_or_dimension():
     body = source.split('"""', 2)[-1]  # skip the module docstring's history
     for token in ("fastembed", "all-MiniLM", "TextEmbedding", "384"):
         assert token not in body, f"router.py still names {token!r}"
+
+
+# ── configuration error vs environment condition ────────────────────────────
+
+
+def test_an_unpublished_model_id_raises_rather_than_degrading():
+    """The distinction #19 exists for.
+
+    An id the provider does not publish will never load on any machine — no
+    retry, no cache warm-up, no different host fixes it. Degrading it to
+    lexical-only makes it indistinguishable from a machine that merely lacks the
+    model cache, which is exactly how 0.1.0-0.1.1 shipped for four days naming a
+    model that does not exist.
+    """
+    pytest.importorskip("fastembed")
+    with pytest.raises(UnknownEmbeddingModel) as excinfo:
+        FastEmbedEmbedder(model_id="definitely/not-a-published-model").ready()
+    assert "not a model this provider publishes" in str(excinfo.value)
+
+
+def test_a_missing_provider_package_degrades_instead_of_raising(monkeypatch):
+    """An absent provider is an ENVIRONMENT condition, not a configuration error.
+
+    This is the half that must keep degrading — the layer never fails closed
+    because the package is not installed on some machine.
+    """
+    import builtins
+
+    real_import = builtins.__import__
+
+    def no_fastembed(name, *args, **kwargs):
+        if name == "fastembed":
+            raise ImportError("no fastembed here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_fastembed)
+    embedder = FastEmbedEmbedder()
+    assert embedder.ready() is False  # degraded, not raised
+
+
+def test_the_shipped_model_id_loads_without_raising():
+    # The guard must not fire on the configuration the package actually ships.
+    pytest.importorskip("fastembed")
+    assert FastEmbedEmbedder().ready() is True

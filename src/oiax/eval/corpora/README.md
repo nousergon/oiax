@@ -27,6 +27,14 @@ python -m oiax.eval.route_eval score reference-policies < reference_labelled.jso
 python -m oiax.eval.route_eval sweep reference-policies < reference_labelled.jsonl
 ```
 
+**The operating point names the model it was measured under**, and an explicitly
+supplied point whose model disagrees with the installed embedder **raises**
+rather than routing quietly: cosine distributions are not comparable between
+models, so carrying floors across a model change is running on a number measured
+on a system that no longer exists. The shipped default against a swapped
+embedder is *not* an error — that is the ordinary adopter case and it goes to the
+divergence signal.
+
 ### Shipped configuration — measured 2026-08-03
 
 | metric | value |

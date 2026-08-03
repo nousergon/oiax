@@ -206,3 +206,64 @@ def test_calibrate_warns_when_the_labelled_set_has_no_negatives(tmp_path, capsys
     # Without negatives the zero-false-alarm gate passes vacuously, and a gate
     # that cannot fail is not a gate.
     assert "NO negative prompts" in err
+
+
+# ── floors are model-specific ───────────────────────────────────────────────
+
+
+def test_an_operating_point_from_another_model_raises():
+    """Carrying floors across a model change is running on a number measured on
+    a system that no longer exists — and it is silent, because the router still
+    returns results. An explicitly supplied point makes it a caller error.
+    """
+    from oiax.embedding import get_embedder
+
+    foreign = OperatingPoint(
+        lex_floor=0.1, sem_floor=0.2, rrf_k=60, top_k=2, model_id="some/other-model"
+    )
+    with pytest.raises(ValueError) as excinfo:
+        build_index(PolicyDirCorpus(REFERENCE), operating_point=foreign)
+    assert get_embedder().model_id() in str(excinfo.value)
+    assert "recalibrate" in str(excinfo.value)
+
+
+def test_an_operating_point_naming_the_running_model_is_accepted():
+    assert build_index(PolicyDirCorpus(REFERENCE), operating_point=SHIPPED).doc_count == 15
+
+
+def test_a_point_with_no_model_id_is_not_second_guessed():
+    # Provenance-free points already announce themselves through divergence();
+    # raising here would block the honest "I have not recorded that yet" case.
+    bare = OperatingPoint(lex_floor=0.1, sem_floor=0.2, rrf_k=60, top_k=2)
+    assert build_index(PolicyDirCorpus(REFERENCE), operating_point=bare).doc_count == 15
+
+
+def test_the_shipped_default_never_raises_against_a_swapped_model():
+    """The ordinary adopter case: a different embedder and no operating point.
+
+    That is the divergence signal's job (§4.5a) — report, do not refuse. Raising
+    here would take the layer down for someone who has done nothing wrong.
+    """
+    from oiax.embedding import set_embedder
+
+    class Other:
+        def embed(self, texts):
+            import numpy as np
+
+            return np.zeros((len(texts), 4), dtype=np.float32)
+
+        def model_id(self):
+            return "some/other-model"
+
+        def dimension(self):
+            return 4
+
+        def ready(self):
+            return True
+
+    set_embedder(Other())
+    try:
+        index = build_index(PolicyDirCorpus(REFERENCE))
+        assert any("not comparable between models" in r for r in index.divergence())
+    finally:
+        set_embedder(None)

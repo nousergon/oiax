@@ -38,9 +38,29 @@ __all__ = [
     "DEFAULT_MODEL_ID",
     "Embedder",
     "FastEmbedEmbedder",
+    "UnknownEmbeddingModel",
     "get_embedder",
     "set_embedder",
 ]
+
+
+class UnknownEmbeddingModel(RuntimeError):
+    """The configured model id is not one the provider publishes.
+
+    Raised rather than degraded, and the distinction is the whole point:
+
+    - **A model id the provider does not publish is a CONFIGURATION error.** It
+      is knowable the moment anything tries to load it, it will never succeed on
+      any machine, and no amount of retrying or waiting fixes it.
+    - **An id it does publish that this machine cannot currently load** — no
+      cache, no disk, no network, an unsupported architecture — is an
+      ENVIRONMENT condition. That degrades to lexical-only and reports itself,
+      because it is genuinely runtime and may be true here and false elsewhere.
+
+    Collapsing the two is what let 0.1.0-0.1.1 ship for four days naming a model
+    that does not exist: every install raised, every install fell back, and the
+    fallback was indistinguishable from a machine that merely lacked the cache.
+    """
 
 #: The shipped model id. It must be one the provider publishes in its own
 #: registry — ``tests/test_embedding.py::test_model_id_is_one_the_provider_publishes``
@@ -105,10 +125,32 @@ class FastEmbedEmbedder:
             return self._model
         try:
             from fastembed import TextEmbedding  # the ONE provider import
+        except Exception as exc:
+            # The provider package is not installed. Environment, not
+            # configuration: degrade and say so.
+            logger.warning("fastembed unavailable (%s) — routing lexical-only", exc)
+            self._model = False
+            return self._model
 
+        # Configuration error, checked before anything expensive happens and
+        # raised rather than degraded. `list_supported_models()` reads the
+        # provider's own local registry — no network, no download.
+        supported = {m["model"] for m in TextEmbedding.list_supported_models()}
+        if self._model_id not in supported:
+            self._model = False  # so a caught raise cannot loop on every call
+            raise UnknownEmbeddingModel(
+                f"{self._model_id!r} is not a model this provider publishes. "
+                f"It will never load on any machine, so it is not degraded to "
+                f"lexical-only. Choose one of "
+                f"`fastembed.TextEmbedding.list_supported_models()`."
+            )
+
+        try:
             self._model = TextEmbedding(model_name=self._model_id)
             logger.info("fastembed model loaded: %s", self._model_id)
         except Exception as exc:
+            # A published id this machine cannot load right now: no cache, no
+            # disk, no network, unsupported architecture. Genuinely runtime.
             logger.warning("fastembed unavailable (%s) — routing lexical-only", exc)
             self._model = False
         return self._model
