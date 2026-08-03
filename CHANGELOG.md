@@ -6,6 +6,60 @@ All notable changes to oiax are recorded here. Versions follow
 
 While the major version is `0`, the public API may change between minor versions.
 
+## [0.3.0] — 2026-08-03
+
+### Removed
+
+- **Query expansions — `expansions=` on `build_index()`, `_LexicalScorer.build()`,
+  and `--expansions` on both adapters — are gone.** A breaking change, taken rather
+  than deprecated: a deprecated parameter that still works is still a recipe for the
+  artifact the design forbids, and the shape has no acceptable form.
+
+  A per-document term list keyed alongside the corpus is a **second copy of the
+  document's own metadata**. It must be regenerated whenever a routing surface
+  changes, nothing fails when it is not, and an inert one is indistinguishable from
+  an intentionally disabled one. The measured instance: a 32-key expansion file keyed
+  by skill name against a router keying by file stem, **0 of 32 keys matching**, live
+  and doing nothing for the life of the feature. The experiment it served measured
+  **+0.0pp** on the reference corpus, and two independent lexical experiments agreed
+  string matching cannot close paraphrase-shaped misses.
+
+  The retirement had already happened in the deployment that used it. It had **not**
+  happened in the library or the README, so the first thing a new adopter read taught
+  them to build exactly that artifact. `tests/test_router.py::
+  test_build_index_has_no_expansions_parameter` asserts it cannot return as a
+  convenience.
+
+### Added
+
+- **`oiax.calibration`** — the operating point is now a first-class object carrying
+  its own provenance, not four anonymous constants. `SHIPPED` names the corpus, its
+  size and separability, the embedding model, the date and the measured metrics;
+  `router.py`'s constants read from it, so there is one definition. `build_index()`
+  takes `operating_point=`, with one stated precedence: explicit kwarg > operating
+  point > shipped default.
+- **`route_eval calibrate`** — runs the shipped grid against *your* corpus and labels
+  and writes a loadable operating point. Zero false alarms is a hard gate, then F1,
+  then the quieter point; the losing rows are printed. No configuration clearing the
+  gate is a finding, not a failure to calibrate.
+- **`Index.divergence()`** — compares the running corpus (size, separability, model)
+  against what the operating point was measured on, and the Claude Code adapter
+  renders the result into the context paragraph rather than a log.
+- **`oiax.telemetry`** — the router reports on itself: per-attempt outcome, failure
+  **class**, degraded flag, corpus size, and delivered latency alongside the warm
+  route. Off by default; `OIAX_TELEMETRY_PATH` or `set_sink()` turns it on.
+  `python -m oiax.eval.telemetry_report` reads the log and names the documents that
+  never route.
+- **`oiax.eval.outcome_eval`** — measures whether routing changes what the agent
+  *does*, across arms, and **refuses to state a verdict** without a host-harness arm.
+
+### Fixed
+
+- `set_sink(sink_from_env())` in the Claude Code adapter overwrote a sink an embedding
+  caller had installed, and with the environment variable unset replaced it with the
+  no-op — switching telemetry off for a caller who had switched it on. Now
+  `install_env_sink()`: fills in a default, never overrules an explicit choice.
+
 ## [0.1.4] — 2026-08-03
 
 ### Fixed
