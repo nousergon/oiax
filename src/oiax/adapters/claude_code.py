@@ -23,7 +23,7 @@ import logging
 import sys
 from pathlib import Path
 
-from oiax import build_index, route
+from oiax import build_index, route, semantic_ready
 from oiax.corpus import PolicyDirCorpus
 from oiax.router import RouteHit
 
@@ -43,9 +43,26 @@ FOOTER = (
 )
 
 
-def _render(hits: list[RouteHit]) -> str:
-    """Render route hits as Claude Code additionalContext markdown."""
+DEGRADED_NOTICE = (
+    "⚠ oiax is routing **lexical-only** — the embedding model did not load, so these "
+    "are keyword matches with no semantic scoring. Treat recall as materially worse "
+    "than usual and rely on the skill descriptions."
+)
+
+
+def _render(hits: list[RouteHit], degraded: bool = False) -> str:
+    """Render route hits as Claude Code additionalContext markdown.
+
+    ``degraded`` (no embedding model — lexical-only scoring) is rendered INTO the
+    context paragraph rather than logged. This hook is invoked with ``2>/dev/null``
+    in the reference settings.json, so stderr is the one surface guaranteed not to
+    reach anyone; a silently lexical-only router is indistinguishable from a healthy
+    one at the read side, which is exactly how the 0.1.1 model-id defect survived.
+    """
     lines = [HEADER, ""]
+    if degraded:
+        lines.append(DEGRADED_NOTICE)
+        lines.append("")
     for hit in hits:
         terms = ", ".join(f"`{t}`" for t in hit.why)
         lines.append(f"- **`{hit.name}`** — matched {terms}")
@@ -112,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         {
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
-                "additionalContext": _render(hits),
+                "additionalContext": _render(hits, degraded=not semantic_ready()),
             }
         },
         sys.stdout,

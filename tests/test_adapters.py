@@ -109,3 +109,18 @@ def test_claude_code_adapter_unparseable_input_exits_cleanly():
             timeout=30,
         )
         assert result.returncode == 0
+
+
+def test_claude_code_adapter_flags_lexical_only_routing():
+    """A degraded (no-embeddings) route SAYS SO in the delivered context.
+
+    The reference settings.json invokes this hook with ``2>/dev/null``, so a
+    warning on stderr reaches no one. The context paragraph is the only surface
+    that survives, so the degradation has to be rendered into it.
+    """
+    from oiax.adapters.claude_code import DEGRADED_NOTICE, _render
+
+    hits = [RouteHit(name="deploy-policy", score=0.4, why=["deploy"])]
+    assert DEGRADED_NOTICE in _render(hits, degraded=True)
+    assert DEGRADED_NOTICE not in _render(hits, degraded=False)
+    assert DEGRADED_NOTICE not in _render(hits)
