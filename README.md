@@ -180,6 +180,34 @@ and a 5-document synthetic smoke corpus that is structurally useful and **cannot
 calibrate anything. Judge labels are evidence, not proof — hand-check a slice before
 treating any rate as authoritative.
 
+### Scores on a corpus this project did not write
+
+The numbers above come from a corpus, a prompt set and a labelling with **one
+author — the author of the design they support.** That is a regression surface, not
+evidence. `oiax.eval.benchmarks` maps public benchmarks onto the same interfaces so a
+score lands somewhere independent. Nothing is vendored; the data is fetched to a cache
+directory you name.
+
+Against **[SkillRet](https://huggingface.co/datasets/ThakiCloud/SKILLRET)** — 6,006
+real skills scraped from public GitHub repos, 4,392 queries, measured 2026-08-03:
+
+| documents | recall@2 | top-1 |
+|---:|---:|---:|
+| 200 | 0.828 | 0.787 |
+| 1,000 | 0.657 | 0.630 |
+| 6,006 | **0.407** | **0.547** |
+
+**Recall@2 halves between 200 and 6,006 documents.** The reference-corpus figure does
+not describe behaviour at scale. And the hybrid earns its place where it matters:
+against lexical-only on the full corpus it is **+7.2 pp on top-1** and only +1.4 pp on
+recall@2 — both scorers usually get the right document into the top two, and fusing
+them is what puts it first.
+
+Full tables, the ablations, and the bounds that limit all of it —
+no negatives in the benchmark, LLM-generated queries, and a material substitution of
+`description` for an authored routing surface — are in
+[`src/oiax/eval/corpora/README.md`](src/oiax/eval/corpora/README.md).
+
 ## Calibration — the shipped floors are one corpus's answer
 
 `oiax`'s selection floors were measured against its reference corpus: **15
