@@ -28,6 +28,7 @@ convenience import at a time.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Protocol, runtime_checkable
 
 import numpy as np
@@ -40,6 +41,7 @@ __all__ = [
     "FastEmbedEmbedder",
     "UnknownEmbeddingModel",
     "get_embedder",
+    "provider_publishes",
     "set_embedder",
 ]
 
@@ -116,9 +118,17 @@ class FastEmbedEmbedder:
     edit moved the numbers.
     """
 
-    def __init__(self, model_id: str = DEFAULT_MODEL_ID) -> None:
+    def __init__(self, model_id: str = DEFAULT_MODEL_ID, cache_dir: str | None = None) -> None:
         self._model_id = model_id
+        # Explicit so provisioning and routing can be pointed at the same place.
+        # None means the provider's own default, which is where a first-use
+        # download lands.
+        self._cache_dir = cache_dir or os.environ.get("OIAX_MODEL_CACHE") or None
         self._model: Any = None  # None = not tried, False = tried and failed
+
+    @property
+    def cache_dir(self) -> str | None:
+        return self._cache_dir
 
     def _load(self) -> Any:
         if self._model is not None:
@@ -146,7 +156,7 @@ class FastEmbedEmbedder:
             )
 
         try:
-            self._model = TextEmbedding(model_name=self._model_id)
+            self._model = TextEmbedding(model_name=self._model_id, cache_dir=self._cache_dir)
             logger.info("fastembed model loaded: %s", self._model_id)
         except Exception as exc:
             # A published id this machine cannot load right now: no cache, no
@@ -176,6 +186,25 @@ class FastEmbedEmbedder:
 
     def ready(self) -> bool:
         return bool(self._load())
+
+
+def provider_publishes(model_id: str) -> bool | None:
+    """Does the provider publish this model id? ``None`` when it cannot be asked.
+
+    Lives here rather than in the caller because it is provider-registry
+    knowledge, and the boundary guard is right to refuse it anywhere else — it
+    caught this function's first draft sitting in `oiax.provision`.
+
+    Three-valued deliberately. ``None`` means the provider package is absent, so
+    the question is UNANSWERED; returning ``False`` there would report "this
+    model does not exist" for what is really "I could not check", and send the
+    reader to fix the wrong thing.
+    """
+    try:
+        from fastembed import TextEmbedding
+    except Exception:
+        return None
+    return model_id in {m["model"] for m in TextEmbedding.list_supported_models()}
 
 
 _EMBEDDER: Embedder = FastEmbedEmbedder()
