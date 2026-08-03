@@ -19,7 +19,40 @@ oiax routes a free-text prompt against a governance corpus and delivers the poli
 pip install oiax
 ```
 
-Requires Python ≥ 3.11. On first use, a ~90MB ONNX embedding model downloads and caches locally. Subsequent routes are ~6ms.
+Requires Python ≥ 3.11.
+
+**Provision the embedding model before the first prompt:**
+
+```bash
+python -m oiax.provision                       # fetch, verify, record a manifest
+python -m oiax.provision --check               # report the state, change nothing
+```
+
+Skip it and the model (~90 MB, ONNX) downloads **inside the first routed turn** —
+on the path whose whole premise is that it makes no network call. Worse, a machine
+with no egress silently becomes a lexical-only router forever, because the only
+fallback is degradation and degradation is not an error.
+
+`--check` reports **three states**, because `semantic_ready()`'s single boolean is
+right for the router and useless to an operator:
+
+| state | means | exit |
+|---|---|---|
+| **PRESENT** | loads with the network unavailable — the promise holds | 0 |
+| **FETCHABLE** | published, not on this machine. **A first prompt will pay for it.** | 1 |
+| **UNAVAILABLE** | not cached and cannot be fetched. Lexical-only until that changes. | 1 |
+
+Non-zero on anything but PRESENT, so it works as a gate in an image build or a
+bootstrap script. **PRESENT is established by actually loading with the provider's
+offline switch set** — never by looking for files and hoping, because a
+cache-shaped directory that does not load is exactly the case worth catching.
+
+Provisioning writes a digest manifest beside the cache and `--check` verifies it,
+so a tampered or truncated cache is a **MISMATCH** rather than a mystery. Point
+both at a specific location with `--cache-dir` or `$OIAX_MODEL_CACHE`.
+
+The first-use fetch still works — `pip install oiax` and a quick trial is the whole
+onboarding path. This makes the cost **avoidable and visible**, not impossible.
 
 ## Quick start
 
