@@ -190,6 +190,69 @@ and a 5-document synthetic smoke corpus that is structurally useful and **cannot
 calibrate anything. Judge labels are evidence, not proof — hand-check a slice before
 treating any rate as authoritative.
 
+## Telemetry — is it working?
+
+`oiax` can report on itself. Off by default; one environment variable turns it on:
+
+```bash
+export OIAX_TELEMETRY_PATH=~/.oiax/events.jsonl
+```
+
+Every route attempt appends one JSON object — **outcome, failure class, degraded
+flag, corpus size, delivered latency, warm route latency, and the document names
+returned.** Then:
+
+```bash
+python -m oiax.eval.telemetry_report ~/.oiax/events.jsonl --corpus-dir ./policies/
+```
+
+```
+oiax telemetry — 4 route attempt(s)
+
+  routed          1  (25.0%)
+  abstained       2  (50.0%)
+  failed          1  (25.0%)
+      input          1
+  degraded        0  (0.0%)  lexical-only
+
+  delivered  p50 234 ms   p99 236 ms
+  warm route p50 4 ms
+             warm route is 1.7% of delivered
+
+  documents routed at least once: 2/15
+  NEVER ROUTED — these routing surfaces are not discriminating:
+      access-control-policy
+      ...
+```
+
+**Why this exists.** Before it, a turn that produced no routes because the router
+crashed and a turn that produced no routes because nothing applied were *the same
+observation*. A routing layer that had stopped working looked exactly like one
+being appropriately quiet — which is how a version that named an embedding model
+the provider does not publish shipped for four days, silently lexical-only,
+warning to a stderr the reference deployment discards.
+
+Four properties:
+
+- **Failure is distinguishable from abstention.** A failed event names its class
+  (`input`, `corpus_load`, `index_build`, `route`, `render`). "No routes" is not
+  one state.
+- **The delivered path is what gets timed**, with the warm route printed beside it
+  and as a percentage of it. The two are routinely quoted apart, and the ratio is
+  the point.
+- **Documents that never route are named.** That list is the actionable half of
+  routing quality — a document that never routes has a routing surface that is not
+  discriminating.
+- **Nothing sensitive is recorded, ever.** No prompt text, no corpus path, no file
+  name. Prompts routinely carry credentials; a telemetry file accumulating them
+  would be a disclosure hole opened by the observability layer itself.
+
+Telemetry **never costs a turn**: the sink is a no-op unless you install one, a
+broken sink is swallowed, and a routing failure still exits clean. To collect
+events in-process instead of to a file, `oiax.telemetry.set_sink()` takes any
+object with a `write(event)` method — an explicit sink is never overruled by the
+environment variable.
+
 ## API
 
 ### `oiax.router`
