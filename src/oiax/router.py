@@ -152,7 +152,7 @@ class RouteHit:
 
 
 class _LexicalScorer:
-    """TF-IDF over trigger lines + expansions, threshold-gated.
+    """TF-IDF over trigger lines, threshold-gated.
 
     Ported from policy_router.py:312 — the lexical half of the hybrid.
     """
@@ -168,14 +168,20 @@ class _LexicalScorer:
         self._doc_terms: list[str] = []  # raw trigger text per doc
         self._matrix: Any = None
 
-    def build(self, docs: list[Document], expansions: dict[str, str] | None = None) -> None:
-        """Build TF-IDF matrix over trigger lines + optional expansions."""
-        if expansions is None:
-            expansions = {}
+    def build(self, docs: list[Document]) -> None:
+        """Build the TF-IDF matrix over trigger lines, and nothing else.
+
+        There is deliberately no expansion parameter. A per-document term list
+        keyed alongside the corpus is a second copy of the document's own
+        metadata: it must be regenerated whenever a routing surface changes,
+        nothing fails when it is not, and an inert one is indistinguishable
+        from an intentionally disabled one. The measured instance — 32 keys,
+        keyed by skill name against a router keying by file stem, 0 matching,
+        live and doing nothing for the life of the feature — is why this
+        signature has no room for one.
+        """
         self._doc_names = [d.name for d in docs]
-        self._doc_terms = [
-            d.trigger_line + " " + expansions.get(d.name, "") for d in docs
-        ]
+        self._doc_terms = [d.trigger_line for d in docs]
         if not self._doc_terms:
             self._matrix = None
             return
@@ -377,7 +383,6 @@ class Index:
 def build_index(
     corpus: Corpus,
     *,
-    expansions: dict[str, str] | None = None,
     operating_point: OperatingPoint | None = None,
     lex_threshold: float | None = None,
     sem_threshold: float | None = None,
@@ -389,9 +394,6 @@ def build_index(
     Args:
         corpus: Any object satisfying the `Corpus` Protocol — provides
                 documents via `.documents() -> Iterator[Document]`.
-        expansions: Optional per-document query-expansion phrases. Keys
-                    are document names; values are additional text
-                    appended to the trigger line for lexical matching.
         lex_threshold: ADMISSION FLOOR for the lexical scorer — the minimum
                        TF-IDF cosine at which a document becomes a candidate.
                        Not a selection gate; see `Index.route`.
@@ -420,7 +422,7 @@ def build_index(
         logger.warning("empty corpus — index will return no hits")
 
     lexical = _LexicalScorer(threshold=lex_threshold)
-    lexical.build(docs, expansions)
+    lexical.build(docs)
 
     semantic = _SemanticScorer(threshold=sem_threshold)
     semantic.build(docs)

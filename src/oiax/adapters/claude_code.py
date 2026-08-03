@@ -4,7 +4,7 @@ Delivers oiax route hits into the Claude Code hook context paragraph.
 Registered in ``~/.claude/settings.json`` under ``hooks.UserPromptSubmit``.
 
 **Invocation (settings.json):** ``python3 -m oiax.adapters.claude_code``
-``<corpus-dir> [--expansions PATH]``
+``<corpus-dir>``
 
 **Design invariants:**
 
@@ -21,7 +21,6 @@ import argparse
 import json
 import logging
 import sys
-from pathlib import Path
 
 from oiax import build_index, route, semantic_ready
 from oiax.calibration import load_operating_point
@@ -92,23 +91,10 @@ def _render(
     return "\n".join(lines)
 
 
-def _load_expansions(path: str | None) -> dict[str, str] | None:
-    """Load optional query-expansion phrases from a JSON file."""
-    if path is None:
-        return None
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        if not isinstance(data, dict):
-            return None
-        return data
-    except Exception as exc:
-        logger.warning("could not load expansions from %s: %s", path, exc)
-        return None
-
 
 def main(argv: list[str] | None = None) -> int:
     """Read ``UserPromptSubmit`` stdin, route, emit hook JSON.
-    CLI: ``<corpus-dir> [--expansions PATH] [--lex-threshold F] [--sem-threshold F]``
+    CLI: ``<corpus-dir> [--operating-point PATH] [--lex-threshold F] [--sem-threshold F]``
 
     The two threshold flags are OVERRIDES. Omitted, the calibrated library defaults
     apply; passing one pins that admission floor for this invocation.
@@ -124,7 +110,6 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("corpus_dir")
-    parser.add_argument("--expansions", default=None)
     # Default None, NOT a literal. These were hardcoded 0.15 / 0.55 — the values
     # `build_index` shipped through 0.1.2 — so when 0.1.3 recalibrated the library
     # defaults to 0.10 / 0.25, the calibration reached every caller EXCEPT the one
@@ -193,7 +178,6 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         corpus = PolicyDirCorpus(parsed.corpus_dir)
-        expansions = _load_expansions(parsed.expansions)
     except Exception as exc:
         return _fail("corpus_load", exc)
 
@@ -208,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         return _fail("corpus_load", exc)
 
     try:
-        index = build_index(corpus, expansions=expansions, operating_point=point, **overrides)
+        index = build_index(corpus, operating_point=point, **overrides)
     except Exception as exc:
         return _fail("index_build", exc)
 

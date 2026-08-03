@@ -25,7 +25,7 @@ which happen once here, leaving ~6 ms per call (``oiax#9``).
 
 Run it::
 
-    oiax-mcp <corpus-dir> [--expansions PATH]
+    oiax-mcp <corpus-dir>
 
 and point a harness at that command over stdio.
 """
@@ -35,7 +35,6 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
-from pathlib import Path
 from typing import Any
 
 from oiax import build_index, route, semantic_ready
@@ -83,8 +82,6 @@ def _route_tool_description(degraded: bool) -> str:
 
 def build_server(
     corpus_dir: str,
-    *,
-    expansions: dict[str, str] | None = None,
     **index_kwargs: Any,
 ) -> Any:
     """Build the MCP server over ``corpus_dir``, with the index already loaded.
@@ -101,7 +98,7 @@ def build_server(
     if not documents:
         raise ValueError(f"no policy documents found in {corpus_dir!r}")
 
-    index = build_index(corpus, expansions=expansions, **index_kwargs)
+    index = build_index(corpus, **index_kwargs)
     degraded = not semantic_ready()
     if degraded:
         logger.warning(
@@ -143,20 +140,6 @@ def build_server(
     return server
 
 
-def _load_expansions(path: str | None) -> dict[str, str] | None:
-    """Load optional query-expansion phrases from a JSON file."""
-    if path is None:
-        return None
-    import json
-
-    try:
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-    except Exception as exc:
-        logger.warning("could not load expansions from %s: %s", path, exc)
-        return None
-    return data if isinstance(data, dict) else None
-
-
 def main(argv: list[str] | None = None) -> int:
     """Console entry point (``oiax-mcp``): serve the corpus over MCP stdio."""
     parser = argparse.ArgumentParser(
@@ -164,7 +147,6 @@ def main(argv: list[str] | None = None) -> int:
         description="Serve an oiax policy corpus as an MCP server over stdio.",
     )
     parser.add_argument("corpus_dir")
-    parser.add_argument("--expansions", default=None)
     parser.add_argument("--lex-threshold", type=float, default=None)
     parser.add_argument("--sem-threshold", type=float, default=None)
     parsed = parser.parse_args(sys.argv[1:] if argv is None else argv)
@@ -179,7 +161,6 @@ def main(argv: list[str] | None = None) -> int:
     }
     server = build_server(
         parsed.corpus_dir,
-        expansions=_load_expansions(parsed.expansions),
         **overrides,
     )
     # Blocks until the client disconnects. stdio is the transport every MCP

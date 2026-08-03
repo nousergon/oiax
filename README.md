@@ -40,16 +40,6 @@ for hit in hits:
     print(f"{hit.name} ({hit.score:.2f}): {', '.join(hit.why)}")
 ```
 
-### Route with query expansions
-
-```python
-import json
-
-expansions = json.load(open("./routing-expansions.json"))
-index = build_index(corpus, expansions=expansions)
-hits = route("help me merge my PR", index)
-```
-
 ### Use a custom corpus
 
 ```python
@@ -80,7 +70,7 @@ an agent can call:
 
 ```bash
 pip install "oiax[mcp]"
-oiax-mcp ./policies/ --expansions ./routing-expansions.json
+oiax-mcp ./policies/
 ```
 
 Point a harness at that command over stdio — `mcpServers` in `~/.cursor/mcp.json`, `mcp_servers` in `~/.codex/config.toml`, or the equivalent:
@@ -90,7 +80,7 @@ Point a harness at that command over stdio — `mcpServers` in `~/.cursor/mcp.js
   "mcpServers": {
     "oiax": {
       "command": "oiax-mcp",
-      "args": ["/absolute/path/to/policies/", "--expansions", "/absolute/path/to/routing-expansions.json"]
+      "args": ["/absolute/path/to/policies/"]
     }
   }
 }
@@ -99,7 +89,7 @@ Point a harness at that command over stdio — `mcpServers` in `~/.cursor/mcp.js
 ```toml
 [mcp_servers.oiax]
 command = "oiax-mcp"
-args = ["/absolute/path/to/policies/", "--expansions", "/absolute/path/to/routing-expansions.json"]
+args = ["/absolute/path/to/policies/"]
 ```
 
 **The index lives in the server process**, which is the point: a fresh-process hook pays
@@ -133,7 +123,7 @@ The `PolicyDirCorpus` loader reads all `*.md` files in a directory. The filename
         "matcher": "",
         "hooks": [{
           "type": "command",
-          "command": "python3 -m oiax.adapters.claude_code /path/to/policies/ --expansions /path/to/expansions.json",
+          "command": "python3 -m oiax.adapters.claude_code /path/to/policies/",
           "timeout": 8
         }]
       }
@@ -332,7 +322,7 @@ environment variable.
 | Callable | Signature | Returns |
 |---|---|---|
 | `route` | `route(prompt: str, index: Index | None = None) -> list[RouteHit]` | Scored hits |
-| `build_index` | `build_index(corpus, *, expansions, lex_threshold, sem_threshold, rrf_k, top_k) -> Index` | Built index |
+| `build_index` | `build_index(corpus, *, operating_point, lex_threshold, sem_threshold, rrf_k, top_k) -> Index` | Built index |
 | `semantic_ready` | `semantic_ready() -> bool` | `False` when the embedding model failed to load and routing is lexical-only — surface it, do not swallow it |
 
 ### `RouteHit`

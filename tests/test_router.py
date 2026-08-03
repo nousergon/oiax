@@ -10,7 +10,7 @@ These tests verify the public API shape and the core invariants:
 from unittest import mock
 
 from oiax.corpus import Document
-from oiax.router import Index, RouteHit, _SemanticScorer, build_index, route
+from oiax.router import Index, RouteHit, _LexicalScorer, _SemanticScorer, build_index, route
 
 
 class _FakeCorpus:
@@ -220,3 +220,21 @@ def test_route_hit_score_is_a_raw_score_not_the_fusion_score():
     (hit,) = idx.route("x")
     assert 0.0 <= hit.score <= 1.0
     assert hit.score == 0.42
+
+
+def test_build_index_has_no_expansions_parameter():
+    """The forbidden shape has no acceptable form, so it gets no signature slot.
+
+    A per-document term list keyed alongside the corpus must be regenerated
+    whenever a routing surface changes, nothing fails when it is not, and an
+    inert one is indistinguishable from an intentionally disabled one. The
+    measured instance was 32 keys, keyed by skill name against a router keying
+    by file stem, 0 matching, live and doing nothing for the life of the
+    feature — and the expansion experiment it served measured +0.0pp.
+
+    Removed in 0.3.0. This test exists so it cannot return as a convenience.
+    """
+    import inspect
+
+    assert "expansions" not in inspect.signature(build_index).parameters
+    assert "expansions" not in inspect.signature(_LexicalScorer.build).parameters
