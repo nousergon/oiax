@@ -53,6 +53,7 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
 
+from oiax.calibration import SHIPPED, CorpusStats, OperatingPoint, divergence
 from oiax.corpus import Corpus, Document
 
 logger = logging.getLogger(__name__)
@@ -88,10 +89,15 @@ _MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
 # prompts, where 0.10 routes nothing for any of them. Decision 2 of the product
 # contract — asymmetric errors, a false positive degrades the layer more than a
 # miss — settles a tie this close toward the quieter operating point.
-LEX_FLOOR: float = 0.10
-SEM_FLOOR: float = 0.25
-RRF_K: int = 60
-TOP_K: int = 2
+# ONE DEFAULT, ONE PLACE. These read from `calibration.SHIPPED`, which is the
+# single definition and the only thing carrying the provenance — which corpus,
+# how many documents, which model, what date. Re-stating the numbers here would
+# be the second copy that let a recalibration reach the library, its tests and
+# its eval harness while missing the one deployment that existed (#11).
+LEX_FLOOR: float = SHIPPED.lex_floor
+SEM_FLOOR: float = SHIPPED.sem_floor
+RRF_K: int = SHIPPED.rrf_k
+TOP_K: int = SHIPPED.top_k
 
 
 def _load_embedder() -> Any:
@@ -236,6 +242,24 @@ class _SemanticScorer:
             logger.warning("embedding build failed (%s) — semantic routing disabled", exc)
             self._doc_embeddings = None
 
+    def separability(self) -> float | None:
+        """Mean pairwise cosine SPREAD across document vectors.
+
+        The precondition on believing any number derived from a corpus: a
+        corpus whose documents all embed to nearly the same vector cannot be
+        separated by any threshold, so recall measures flat and a threshold
+        chosen on it was chosen on noise. Measured ~0.04 on the first eval
+        corpus against 0.55 on the one that replaced it.
+        """
+        if self._doc_embeddings is None or len(self._doc_embeddings) < 2:
+            return None
+        sims = sklearn_cosine(self._doc_embeddings, self._doc_embeddings)
+        n = len(sims)
+        off_diagonal = [sims[i][j] for i in range(n) for j in range(n) if i != j]
+        if not off_diagonal:
+            return None
+        return float(max(off_diagonal) - min(off_diagonal))
+
     def query(self, prompt: str) -> list[tuple[str, float, list[str]]]:
         """Score prompt against doc embeddings."""
         if self._doc_embeddings is None:
@@ -279,6 +303,27 @@ class Index:
     build_time_ms: float
     rrf_k: int = RRF_K
     top_k: int = TOP_K
+    operating_point: OperatingPoint = SHIPPED
+    corpus_separability: float | None = None
+
+    @property
+    def stats(self) -> CorpusStats:
+        """What this corpus looks like, for comparison against the calibration."""
+        return CorpusStats(
+            size=self.doc_count,
+            separability=self.corpus_separability,
+            model_id=_MODEL_NAME if self.corpus_separability is not None else "",
+        )
+
+    def divergence(self) -> list[str]:
+        """Reasons this corpus is unlike the one the operating point came from.
+
+        Empty when nothing is out of range. Callers rendering routes to a reader
+        MUST surface a non-empty result — the layer is running and its numbers do
+        not mean what its documentation says, which is the same character as the
+        lexical-only degradation and belongs on the same surface.
+        """
+        return divergence(self.stats, self.operating_point)
 
     def route(self, prompt: str) -> list[RouteHit]:
         """Route a prompt against the index, returning at most ``top_k`` hits.
@@ -333,10 +378,11 @@ def build_index(
     corpus: Corpus,
     *,
     expansions: dict[str, str] | None = None,
-    lex_threshold: float = LEX_FLOOR,
-    sem_threshold: float = SEM_FLOOR,
-    rrf_k: int = RRF_K,
-    top_k: int = TOP_K,
+    operating_point: OperatingPoint | None = None,
+    lex_threshold: float | None = None,
+    sem_threshold: float | None = None,
+    rrf_k: int | None = None,
+    top_k: int | None = None,
 ) -> Index:
     """Build a routing index from a corpus.
 
@@ -360,6 +406,14 @@ def build_index(
         An `Index` ready for `route()` calls. Cold build ~700ms; the
         embedding model is cached process-wide after first load.
     """
+    point = operating_point or SHIPPED
+    # Explicit kwargs override the operating point; the operating point overrides
+    # the shipped default. Three layers, one direction, no silent precedence.
+    lex_threshold = point.lex_floor if lex_threshold is None else lex_threshold
+    sem_threshold = point.sem_floor if sem_threshold is None else sem_threshold
+    rrf_k = point.rrf_k if rrf_k is None else rrf_k
+    top_k = point.top_k if top_k is None else top_k
+
     t0 = time.perf_counter()
     docs = list(corpus.documents())
     if not docs:
@@ -381,6 +435,8 @@ def build_index(
         build_time_ms=elapsed,
         rrf_k=rrf_k,
         top_k=top_k,
+        operating_point=point,
+        corpus_separability=semantic.separability(),
     )
 
 

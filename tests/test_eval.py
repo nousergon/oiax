@@ -5,9 +5,7 @@ import tempfile
 from io import StringIO
 from pathlib import Path
 
-import numpy as np
 import pytest
-from sklearn.metrics.pairwise import cosine_similarity
 
 from oiax import build_index, route
 from oiax.corpus import PolicyDirCorpus
@@ -153,11 +151,11 @@ def test_reference_corpus_documents_are_separable():
     cannot separate its own documents makes any number measured on it meaningless.
     """
     index = build_index(PolicyDirCorpus(str(REFERENCE_DIR)))
-    matrix = index.semantic._doc_embeddings
-    assert matrix is not None, "embedding model did not load — cannot judge separation"
-    sim = cosine_similarity(matrix, matrix)
-    off_diagonal = sim[~np.eye(len(matrix), dtype=bool)]
-    spread = float(off_diagonal.max() - off_diagonal.min())
+    # Reads the ONE implementation (`Index.corpus_separability`), which the
+    # divergence signal also uses. Recomputing it here would be a second copy of
+    # the metric, free to disagree with the number the layer actually acts on.
+    spread = index.corpus_separability
+    assert spread is not None, "embedding model did not load — cannot judge separation"
     assert spread > SEPARATION_FLOOR, f"corpus is degenerate: cosine spread {spread:.3f}"
 
 

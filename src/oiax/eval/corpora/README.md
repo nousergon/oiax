@@ -84,11 +84,21 @@ loader parse, does the index build, does routing return the right shape.
 
 **It cannot calibrate anything and must not be used to.** All five trigger lines
 are one sentence with the policy name substituted, so every document embeds to
-nearly the same vector — pairwise cosine spread ~0.04, against 0.55 on the
-reference corpus — and recall is flat at 0.40 for every threshold from 0.55 down
-to 0.30. A corpus that cannot separate its own documents cannot calibrate a
-separation threshold. `tests/test_eval.py` asserts the reference corpus keeps a
-spread above 0.15 so this failure mode cannot recur unnoticed.
+nearly the same neighbourhood and recall is flat at 0.40 for every threshold from
+0.55 down to 0.30. A corpus that cannot separate its own documents cannot
+calibrate a separation threshold.
+
+**Figure corrected 2026-08-03.** This paragraph read "pairwise cosine spread
+~0.04". Measured against the shipped corpus with the metric the test and the
+divergence signal both use — max minus min off-diagonal cosine — it is **0.222**,
+against **0.553** on the reference corpus. Mean pairwise similarity tells the
+story the old figure was reaching for: **0.663** here versus **0.258** on the
+reference corpus, i.e. these five documents sit on top of each other.
+
+The correction matters because 0.222 clears the 0.15 floor that
+`tests/test_eval.py` asserts. **The floor alone does not catch this corpus** —
+what catches it is the flat recall curve, and the floor's job is only to catch
+the fully degenerate case.
 
 ## `reference_tasks.jsonl` — the outcome task set
 

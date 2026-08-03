@@ -24,6 +24,7 @@ import sys
 from pathlib import Path
 
 from oiax import build_index, route, semantic_ready
+from oiax.calibration import load_operating_point
 from oiax.corpus import PolicyDirCorpus
 from oiax.router import RouteHit
 from oiax.telemetry import RouteEvent, emit, install_env_sink, timer
@@ -46,6 +47,13 @@ FOOTER = (
 )
 
 
+DIVERGENCE_HEADER = (
+    "⚠ oiax is running **far from its calibration** — the selection floors in "
+    "force were measured on a different corpus, so recall and precision here are "
+    "unmeasured. Reasons:"
+)
+
+
 DEGRADED_NOTICE = (
     "⚠ oiax is routing **lexical-only** — the embedding model did not load, so these "
     "are keyword matches with no semantic scoring. Treat recall as materially worse "
@@ -53,7 +61,9 @@ DEGRADED_NOTICE = (
 )
 
 
-def _render(hits: list[RouteHit], degraded: bool = False) -> str:
+def _render(
+    hits: list[RouteHit], degraded: bool = False, divergence: list[str] | None = None
+) -> str:
     """Render route hits as Claude Code additionalContext markdown.
 
     ``degraded`` (no embedding model — lexical-only scoring) is rendered INTO the
@@ -65,6 +75,14 @@ def _render(hits: list[RouteHit], degraded: bool = False) -> str:
     lines = [HEADER, ""]
     if degraded:
         lines.append(DEGRADED_NOTICE)
+        lines.append("")
+    if divergence:
+        # Rendered INTO the paragraph for the same reason as the degradation
+        # notice: the layer is running, and its numbers do not mean what its
+        # documentation says. A log would reach nobody.
+        lines.append(DIVERGENCE_HEADER)
+        for reason in divergence:
+            lines.append(f"  - {reason}")
         lines.append("")
     for hit in hits:
         terms = ", ".join(f"`{t}`" for t in hit.why)
@@ -113,6 +131,12 @@ def main(argv: list[str] | None = None) -> int:
     # deployment that exists. The adapter silently kept routing at the old operating
     # point (recall 0.185) while the library, its tests and its eval harness all
     # measured 0.648. One default, one place.
+    parser.add_argument(
+        "--operating-point",
+        default=None,
+        help="path to a JSON operating point from `route_eval calibrate`; "
+             "omitted, the shipped reference-corpus defaults apply",
+    )
     parser.add_argument("--lex-threshold", type=float, default=None)
     parser.add_argument("--sem-threshold", type=float, default=None)
     parsed = parser.parse_args(argv)
@@ -174,7 +198,17 @@ def main(argv: list[str] | None = None) -> int:
         return _fail("corpus_load", exc)
 
     try:
-        index = build_index(corpus, expansions=expansions, **overrides)
+        point = (
+            load_operating_point(parsed.operating_point) if parsed.operating_point else None
+        )
+    except Exception as exc:
+        # NOT a soft fallback to the shipped defaults: a caller who passed a path
+        # meant to use it, and silently routing on someone else's numbers is the
+        # failure the operating point exists to prevent.
+        return _fail("corpus_load", exc)
+
+    try:
+        index = build_index(corpus, expansions=expansions, operating_point=point, **overrides)
     except Exception as exc:
         return _fail("index_build", exc)
 
@@ -203,7 +237,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        rendered = _render(hits, degraded=degraded)
+        rendered = _render(hits, degraded=degraded, divergence=index.divergence())
     except Exception as exc:
         return _fail("render", exc)
 
