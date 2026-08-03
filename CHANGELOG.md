@@ -6,11 +6,11 @@ All notable changes to oiax are recorded here. Versions follow
 
 While the major version is `0`, the public API may change between minor versions.
 
-## [0.3.1] — 2026-08-04
+## [0.3.1] — 2026-08-03
 
 ### Changed
 
-- **Relicensed from AGPL-3.0 to MIT.** Brian's ruling, 2026-08-04. AGPL exists to stop
+- **Relicensed from AGPL-3.0 to MIT.** Brian's ruling, 2026-08-03. AGPL exists to stop
   someone running the code as a closed service; oiax is not being monetised, so that
   protection bought nothing while costing the only thing the project is for — being
   installed and tried. `LICENSE`, the `pyproject.toml` licence field and PyPI
