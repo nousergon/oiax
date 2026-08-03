@@ -178,3 +178,95 @@ is not reproducible — `format_report` warns when conditions are absent and the
 bound is printed with every result. When a run happens, its table goes here with
 all three conditions named, **including if routing makes no measurable
 difference**, which would be worth more than any recall figure in this repo.
+
+## Out-of-org results — SkillRet
+
+Everything above is measured on a corpus, a prompt set and a labelling that
+share one author with the design they are cited to support. It is a **regression
+surface**. This section is the first evidence that is not.
+
+**[SkillRet](https://huggingface.co/datasets/ThakiCloud/SKILLRET)** — a
+skill-retrieval benchmark over **6,006 real skills scraped from public GitHub
+repositories**, with 4,392 queries and 7,187 relevance judgements, in classic IR
+shape. Nothing is vendored; `oiax.eval.benchmarks.fetch()` downloads the test
+split (~112 MB) to a cache directory you name.
+
+```python
+from oiax.eval.benchmarks import SkillRetCorpus, load_skillret_labelled, fetch
+paths = fetch("~/.cache/oiax/skillret")
+corpus = SkillRetCorpus(paths["skills"])
+items = load_skillret_labelled(paths["queries"], paths["qrels"], restrict_to=corpus.ids())
+```
+
+### Corpus-size curve — measured 2026-08-03, shipped defaults
+
+Deterministic subsets (seed 0); queries whose gold skills were truncated away are
+dropped, so every row is answerable at recall 1.0. Query sample capped at 1,500.
+
+| documents | queries | recall@2 | top-1 | precision | F1 | route ms |
+|---:|---:|---:|---:|---:|---:|---:|
+| 200 | 61 | **0.828** | 0.787 | 0.434 | 0.570 | 4.1 |
+| 1,000 | 362 | **0.657** | 0.630 | 0.363 | 0.468 | 4.4 |
+| 6,006 | 1,500 | **0.407** | 0.547 | 0.331 | 0.365 | 7.7 |
+
+**Recall@2 halves between 200 and 6,006 documents.** The 0.648 measured on the
+15-document reference corpus does not describe behaviour at scale, and this table
+is why §7.2 requires a size curve rather than a single figure.
+
+**Read top-1 as the comparable number here, not recall@2.** 51% of SkillRet
+queries have more than one gold skill, and `top_k=2` cannot retrieve three. So
+recall@2 is structurally capped by the cap, and top-1 accuracy (0.547 at 6,006)
+degrades far more gently than recall@2 (0.407).
+
+### Does the hybrid earn its place? — 6,006 documents, 1,500 queries
+
+| configuration | recall@2 | top-1 | precision | F1 |
+|---|---:|---:|---:|---:|
+| **hybrid, shipped floors** | **0.407** | **0.547** | 0.331 | 0.365 |
+| lexical only (semantic disabled) | 0.393 | 0.475 | 0.320 | 0.353 |
+| semantic only (lexical disabled) | 0.360 | 0.485 | 0.293 | 0.323 |
+
+**Yes, and the margin is in the ranking rather than in the retrieval.** Hybrid
+beats lexical-only by **+7.2 pp on top-1** and by only **+1.4 pp on recall@2**:
+both scorers usually get the right document into the top two, and fusing them is
+what puts it first. That is the clearest independent support the core design
+decision has, and it is on a corpus this project did not write.
+
+### The floors barely matter at this scale
+
+| lex / sem | recall@2 | top-1 | F1 |
+|---|---:|---:|---:|
+| 0.05 / 0.15 | 0.408 | 0.547 | 0.366 |
+| 0.05 / 0.25 | 0.408 | 0.547 | 0.366 |
+| 0.10 / 0.25 *(shipped)* | 0.407 | 0.547 | 0.365 |
+| 0.15 / 0.25 | 0.409 | 0.540 | 0.367 |
+
+A 0.002 spread. **The operating point calibrated so carefully on 15 documents is
+close to irrelevant on 6,006** — with that many candidates something always
+clears a floor, so the floors gate almost nothing and the fusion does the work.
+Two consequences worth stating rather than burying:
+
+- **Abstention was 0% in every configuration.** The property oiax prizes — a
+  prompt no scorer admits routes to nothing — is effectively inoperative at this
+  scale on this benchmark.
+- Recalibrating the floors for this corpus would recover roughly nothing. The
+  transfer question §7.2 item 8 asks has an answer here, and it is *"the floors
+  do not transfer because at this size they barely operate."*
+
+### Bounds on all of the above
+
+- **No negatives.** Every SkillRet query has a gold skill, so the false-alarm
+  rate — the bar oiax actually calibrates against — **is not measurable on this
+  benchmark.** These numbers say nothing about how quiet the router is.
+- **Queries are LLM-generated** (the dataset records `generator_model`). Out of
+  this project's authorship, but synthetic rather than real user prompts.
+- **A substitution was made and it is material.** oiax scores an authored
+  *routing surface* — a statement of when a document applies. SkillRet skills
+  have no such field, so their `description` stands in. A description says what a
+  skill *is*; a routing surface says when it *applies*. Part of the gap between
+  0.828 and 0.407 is that substitution rather than the router, and no adjustment
+  has been made for it.
+- **The divergence signal fired at every corpus size**, correctly: the shipped
+  operating point was measured on a different corpus and says so.
+- The published SkillRet baselines are not reproduced here, so these are absolute
+  numbers rather than a head-to-head placement.
