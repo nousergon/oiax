@@ -55,23 +55,27 @@ from sklearn.metrics.pairwise import cosine_similarity as sklearn_cosine
 
 from oiax.calibration import SHIPPED, CorpusStats, OperatingPoint, divergence
 from oiax.corpus import Corpus, Document
+from oiax.embedding import get_embedder
 
 logger = logging.getLogger(__name__)
 
-# ── embedding model ─────────────────────────────────────────────────────────
-# fastembed provides local ONNX inference — no network call after initial
-# model download. Model is cached per-process; cold first-build downloads
-# and converts (~700ms), warm route is ~6ms.
+# ── embedding ───────────────────────────────────────────────────────────────
+# The provider lives in `oiax.embedding` and is named NOWHERE in this module.
+# Substituting it is one adapter plus a recalibration (the floors are
+# model-specific), never a change here.
 
-_EMBEDDER: Any = None  # fastembed.TextEmbedding, lazy-loaded
-_EMBEDDING_DIM: int = 384  # all-MiniLM-L6-v2
-# The id must be one fastembed publishes in `TextEmbedding.list_supported_models()`.
-# Through 0.1.1 this read "fastembed/all-MiniLM-L6-v2", which fastembed does not
-# recognise: EVERY install raised at load, took the lexical-only branch below, and
-# routed with no semantic scorer at all — the whole point of the package — while
-# reporting nothing beyond one warning on stderr. `test_model_name_is_supported`
-# pins the id against fastembed's own registry so a rename cannot repeat it.
-_MODEL_NAME: str = "sentence-transformers/all-MiniLM-L6-v2"
+
+def semantic_ready() -> bool:
+    """True when the embedder loaded and routing is semantic + lexical.
+
+    False means the scorer is lexical-only. Callers that render routes to a user
+    MUST surface that — a lexical-only route looks identical to a semantic one at
+    the call site, which is how the 0.1.1 model-id defect survived: the warning
+    went to stderr and the Claude Code hook discards stderr. Loading is lazy, so
+    this triggers the load on first call.
+    """
+    return get_embedder().ready()
+
 
 # ── selection defaults ──────────────────────────────────────────────────────
 # Calibrated 2026-08-03 against `eval/corpora/reference-policies` (15 documents)
@@ -98,34 +102,6 @@ LEX_FLOOR: float = SHIPPED.lex_floor
 SEM_FLOOR: float = SHIPPED.sem_floor
 RRF_K: int = SHIPPED.rrf_k
 TOP_K: int = SHIPPED.top_k
-
-
-def _load_embedder() -> Any:
-    """Lazy-load the embedding model once per process."""
-    global _EMBEDDER
-    if _EMBEDDER is not None:
-        return _EMBEDDER
-    try:
-        from fastembed import TextEmbedding
-
-        _EMBEDDER = TextEmbedding(model_name=_MODEL_NAME)
-        logger.info("fastembed model loaded: %s", _MODEL_NAME)
-    except Exception as exc:
-        logger.warning("fastembed unavailable (%s) — routing lexical-only", exc)
-        _EMBEDDER = False  # sentinel: tried and failed
-    return _EMBEDDER
-
-
-def semantic_ready() -> bool:
-    """True when the embedding model loaded and routing is semantic + lexical.
-
-    False means the scorer is lexical-only. Callers that render routes to a user
-    MUST surface that — a lexical-only route looks identical to a semantic one at
-    the call site, which is how the 0.1.1 model-id defect survived: the warning
-    went to stderr and the Claude Code hook discards stderr. Loading is lazy, so
-    this triggers the load on first call.
-    """
-    return bool(_load_embedder())
 
 
 # ── route result ────────────────────────────────────────────────────────────
@@ -234,16 +210,16 @@ class _SemanticScorer:
 
     def build(self, docs: list[Document]) -> None:
         """Build embedding matrix for all doc trigger lines."""
-        embedder = _load_embedder()
-        if embedder is False or embedder is None:
+        embedder = get_embedder()
+        if not embedder.ready():
             self._doc_embeddings = None
             return
 
         self._doc_names = [d.name for d in docs]
         trigger_lines = [d.trigger_line for d in docs]
         try:
-            embeddings = list(embedder.embed(trigger_lines, batch_size=len(trigger_lines)))
-            self._doc_embeddings = np.array(embeddings, dtype=np.float32)
+            matrix = embedder.embed(trigger_lines)
+            self._doc_embeddings = matrix if len(matrix) else None
         except Exception as exc:
             logger.warning("embedding build failed (%s) — semantic routing disabled", exc)
             self._doc_embeddings = None
@@ -270,12 +246,13 @@ class _SemanticScorer:
         """Score prompt against doc embeddings."""
         if self._doc_embeddings is None:
             return []
-        embedder = _load_embedder()
-        if embedder is False or embedder is None:
+        embedder = get_embedder()
+        if not embedder.ready():
             return []
         try:
-            q_embedding = list(embedder.embed([prompt], batch_size=1))
-            q_vec = np.array(q_embedding, dtype=np.float32)
+            q_vec = embedder.embed([prompt])
+            if not len(q_vec):
+                return []
             scores = sklearn_cosine(q_vec, self._doc_embeddings).flatten()
         except Exception as exc:
             logger.warning("semantic query failed: %s", exc)
@@ -318,7 +295,7 @@ class Index:
         return CorpusStats(
             size=self.doc_count,
             separability=self.corpus_separability,
-            model_id=_MODEL_NAME if self.corpus_separability is not None else "",
+            model_id=get_embedder().model_id() if self.corpus_separability is not None else "",
         )
 
     def divergence(self) -> list[str]:

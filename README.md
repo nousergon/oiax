@@ -352,6 +352,35 @@ environment variable.
 | `route` | `route(prompt: str, index: Index | None = None) -> list[RouteHit]` | Scored hits |
 | `build_index` | `build_index(corpus, *, operating_point, lex_threshold, sem_threshold, rrf_k, top_k) -> Index` | Built index |
 | `semantic_ready` | `semantic_ready() -> bool` | `False` when the embedding model failed to load and routing is lexical-only — surface it, do not swallow it |
+| `set_embedder` | `set_embedder(embedder: Embedder \| None) -> None` | Install a different embedding provider. `None` restores the default |
+
+### Swapping the embedding provider
+
+One module names a provider. `oiax.embedding` holds the `Embedder` protocol and
+the shipped local-ONNX adapter; the router, the corpus loader and every harness
+adapter address the protocol and nothing else — asserted by
+`tests/test_embedding.py::test_no_module_outside_the_adapter_imports_the_provider`.
+
+```python
+from oiax.embedding import set_embedder
+
+class MyEmbedder:
+    def embed(self, texts: list[str]): ...   # float32[n, d], L2-normalised
+    def model_id(self) -> str: ...           # enters the calibration provenance
+    def dimension(self) -> int: ...
+    def ready(self) -> bool: ...             # honest, and triggers the load
+
+set_embedder(MyEmbedder())
+```
+
+**L2 normalisation is part of the contract**, not an implementation detail: a
+consumer that assumes cosine is a dot product and an adapter that does not
+honour it fail silently, and only on some corpora.
+
+**A provider swap needs a recalibration.** Cosine distributions are not
+comparable between models, so the shipped floors were measured on a system that
+is not yours — run `route_eval calibrate` and the divergence signal will tell you
+when they have stopped applying.
 
 ### `RouteHit`
 

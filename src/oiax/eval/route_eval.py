@@ -319,7 +319,7 @@ def calibrate(
     and the next person re-runs the sweep to find out.
     """
     from oiax.corpus import PolicyDirCorpus
-    from oiax.router import _MODEL_NAME
+    from oiax.embedding import get_embedder
 
     index_probe = build_index(PolicyDirCorpus(corpus_dir))
     if index_probe.doc_count == 0:
@@ -359,7 +359,7 @@ def calibrate(
         corpus_id=corpus_id or corpus_dir,
         corpus_size=index_probe.doc_count,
         corpus_separability=index_probe.corpus_separability,
-        model_id=_MODEL_NAME,
+        model_id=get_embedder().model_id(),
         measured="",  # stamped by the caller; this module has no clock by design
         metrics={
             "recall@2": round(best.recall, 3),
