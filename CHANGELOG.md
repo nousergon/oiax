@@ -6,6 +6,26 @@ All notable changes to oiax are recorded here. Versions follow
 
 While the major version is `0`, the public API may change between minor versions.
 
+## [0.3.1] — 2026-08-03
+
+### Changed
+
+- **Relicensed from AGPL-3.0 to MIT.** Brian's ruling, 2026-08-03. AGPL exists to stop
+  someone running the code as a closed service; oiax is not being monetised, so that
+  protection bought nothing while costing the only thing the project is for — being
+  installed and tried. `LICENSE`, the `pyproject.toml` licence field and PyPI
+  classifier, the README and `CONTRIBUTING.md` all move together, and the version bump
+  is what carries the new metadata to PyPI: without a release, `pip show oiax` keeps
+  reporting AGPL-3.0 regardless of what the repo says.
+
+  **Versions up to and including 0.3.0 remain AGPL-3.0.** A licence change is not
+  retroactive.
+
+- `CONTRIBUTING.md` now requires a DCO sign-off (`git commit -s`). MIT is silent on
+  inbound contribution terms — under AGPL the copyleft carried them implicitly, and
+  dropping to a permissive licence without a sign-off would leave nothing recording
+  the terms a contributor's patch arrives under.
+
 ## [0.3.0] — 2026-08-03
 
 ### Removed
