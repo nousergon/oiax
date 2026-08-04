@@ -9,12 +9,15 @@ CI depend on a host nobody here controls.
 from __future__ import annotations
 
 import json
+import tempfile
 
 import pytest
 
 from oiax.eval.benchmarks import (
     SKILLRET_FILES,
     SkillRetCorpus,
+    _build_family_map,
+    family_confusion,
     load_skillret_labelled,
     subsample,
 )
@@ -153,3 +156,52 @@ def test_the_test_split_is_what_gets_fetched():
     # Scoring against the split the benchmark designates for testing is the only
     # honest option; the 335 MB combined corpus is deliberately not used.
     assert all("test" in rel for rel in SKILLRET_FILES.values())
+
+# ── family confusion ─────────────────────────────────────────────────────
+
+
+def test_build_family_map_from_skillret_records():
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".jsonl", delete=False
+    ) as f:
+        f.write(
+            '{"id": "a", "name": "Python",'
+            ' "major": "Software Engineering", "sub": "Development"}\n'
+            '{"id": "b", "name": "Python",'
+            ' "major": "Data & ML", "sub": "Data Analysis"}\n'
+            '{"id": "c", "name": "Unique Skill", "major": "DevOps", "sub": ""}\n'
+        )
+        path = f.name
+
+    try:
+        out: dict[str, str] = {}
+        _build_family_map(path, out)
+
+        assert "name:python" in out["a"]
+        assert "name:python" in out["b"]
+        assert "major:Software Engineering" in out["a"]
+        assert "major:Data & ML" in out["b"]
+        assert "name:unique skill" not in out.get("c", "")
+    finally:
+        import os
+        os.unlink(path)
+
+
+def test_family_confusion_empty_returns_zero():
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".jsonl", delete=False
+    ) as f:
+        json.dump(
+            {"id": "a", "name": "Test", "description": "testing code",
+             "major": "DevOps", "sub": "", "body": "body"}, f
+        )
+        f.write("\n")
+        path = f.name
+
+    try:
+        result = family_confusion(path, [])
+        assert result["n_queries"] == 0
+        assert result["rate"] == 0.0
+    finally:
+        import os
+        os.unlink(path)

@@ -50,6 +50,7 @@ from oiax.corpus import Document
 __all__ = [
     "SKILLRET_FILES",
     "SkillRetCorpus",
+    "family_confusion",
     "fetch",
     "load_skillret_labelled",
     "subsample",
@@ -120,6 +121,22 @@ class SkillRetCorpus:
                 line = line.strip()
                 if line:
                     yield line
+
+    def fingerprint(self) -> str:
+        """Hash of file path + mtime + first/last skill ids.
+
+        A full content hash of a 112 MB file is too slow; this catches
+        the common cases (file replaced, re-downloaded, different split).
+        """
+        import hashlib as _hashlib
+
+        h = _hashlib.sha256()
+        h.update(str(self.path).encode("utf-8"))
+        try:
+            h.update(str(Path(self.path).stat().st_mtime_ns).encode("utf-8"))
+        except OSError:
+            pass
+        return h.hexdigest()
 
     def ids(self) -> set[str]:
         """The skill ids this corpus contains — the denominator for filtering
@@ -193,6 +210,116 @@ def load_skillret_labelled(
             if prompt:
                 items.append({"prompt": prompt, "expected": expected})
     return items
+
+
+def family_confusion(
+    corpus_path: str | Path,
+    labelled: list[dict[str, Any]],
+    *,
+    top_k: int = 2,
+    **index_kwargs: Any,
+) -> dict[str, Any]:
+    """How often do same-family skills crowd the top-k?
+
+    Family is derived from SkillRet's taxonomy: two skills are in the same
+    family when they share a ``major`` taxonomy category or the same skill
+    name (205 collisions across 6,006 skills). A query labelled for skill A
+    whose top-k also contains skill B (same family, not the gold) is a
+    **family-confusion hit**.
+
+    This gates `#24` (selection stage). It is NOT the HSR metric — HSR
+    requires query-specific sibling labels, and SkillResolve-Bench (the only
+    source) is unavailable. Family-confusion is coarser but measured rather
+    than asserted.
+    """
+    from oiax.router import build_index
+
+    limit: int | None = index_kwargs.pop("limit", None)
+    index_kwargs.pop("seed", None)
+
+    corpus = SkillRetCorpus(corpus_path, limit=limit)
+    index = build_index(corpus, **index_kwargs)
+
+    id_to_family: dict[str, str] = {}
+    _build_family_map(corpus_path, id_to_family)
+
+    n_confused = 0
+    n_queries = 0
+    examples: list[dict[str, Any]] = []
+
+    for item in labelled:
+        prompt = item["prompt"]
+        expected = set(item["expected"])
+        hits = index.route(prompt)
+        hit_names = [h.name for h in hits[:top_k]]
+
+        for h in hit_names:
+            if h in expected:
+                continue
+            h_family = id_to_family.get(h, "")
+            if not h_family:
+                continue
+            for gold in expected:
+                gold_family = id_to_family.get(gold, "")
+                if gold_family and gold_family == h_family:
+                    n_confused += 1
+                    if len(examples) < 5:
+                        examples.append({
+                            "prompt": prompt[:120],
+                            "expected": list(expected),
+                            "confused_with": h,
+                            "family": h_family,
+                        })
+                    break
+            else:
+                continue
+            break
+
+        n_queries += 1
+
+    rate = n_confused / n_queries if n_queries else 0.0
+    return {
+        "n_queries": n_queries,
+        "n_confused": n_confused,
+        "rate": round(rate, 4),
+        "top_k": top_k,
+        "examples": examples[:3],
+    }
+
+
+def _build_family_map(path: str | Path, out: dict[str, str]) -> None:
+    """Populate id->family from SkillRet taxonomy and name collisions."""
+    p = Path(path)
+    if not p.is_file():
+        return
+
+    name_to_ids: dict[str, list[str]] = {}
+    with p.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            sid = rec.get("id", "")
+            if not sid:
+                continue
+            name = (rec.get("name") or "").strip().lower()
+            if name:
+                name_to_ids.setdefault(name, []).append(sid)
+
+            major = (rec.get("major") or "").strip()
+            sub = (rec.get("sub") or "").strip()
+            if major:
+                family = f"major:{major}"
+                if sub:
+                    family += f"/sub:{sub}"
+                out[sid] = family
+
+    for name, ids in name_to_ids.items():
+        if len(ids) >= 2:
+            for sid in ids:
+                existing = out.get(sid, "")
+                out[sid] = (existing + " " if existing else "") + f"name:{name}"
 
 
 def subsample(items: list[dict[str, Any]], n: int, *, seed: int = 0) -> list[dict[str, Any]]:
