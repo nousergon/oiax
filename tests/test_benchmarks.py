@@ -15,10 +15,14 @@ import pytest
 
 from oiax.eval.benchmarks import (
     SKILLRET_FILES,
+    SRABENCH_DOMAIN,
+    SRABENCH_FILES,
     SkillRetCorpus,
+    SRABenchCorpus,
     _build_family_map,
     family_confusion,
     load_skillret_labelled,
+    load_srabench_labelled,
     subsample,
 )
 
@@ -205,3 +209,150 @@ def test_family_confusion_empty_returns_zero():
     finally:
         import os
         os.unlink(path)
+
+
+# ── SRA-Bench (second out-of-org corpus, #46) ────────────────────────────────
+
+SRABENCH_CORPUS = [
+    {
+        "skill_id": "medcalcbench_000",
+        "name": "BMI",
+        "description": "Compute BMI from weight and height.",
+        "content": "full doc A",
+    },
+    {
+        "skill_id": "medcalcbench_001",
+        "name": "CHA2DS2-VASc",
+        "description": "Stroke risk in atrial fibrillation.",
+        "content": "full doc B",
+    },
+    {
+        "skill_id": "medcalcbench_002",
+        "name": "nodesc",
+        "description": "   ",
+        "content": "full doc C",
+    },
+    {
+        "skill_id": "champ_000",
+        "name": "Other domain",
+        "description": "should never appear in a medcalcbench slice",
+        "content": "full doc D",
+    },
+]
+SRABENCH_INSTANCES = [
+    {
+        "instance_id": "medcalcbench_00000",
+        "dataset": "medcalcbench",
+        "question": "what is the BMI",
+        "skill_annotations": ["medcalcbench_000"],
+    },
+    {
+        "instance_id": "medcalcbench_00001",
+        "dataset": "medcalcbench",
+        "question": "stroke risk please",
+        "skill_annotations": ["medcalcbench_001"],
+    },
+    {
+        "instance_id": "medcalcbench_00002",
+        "dataset": "medcalcbench",
+        "question": "unanswerable after truncation",
+        "skill_annotations": ["medcalcbench_999"],
+    },
+    {
+        "instance_id": "medcalcbench_00003",
+        "dataset": "medcalcbench",
+        "question": "",
+        "skill_annotations": ["medcalcbench_000"],
+    },
+    {
+        "instance_id": "champ_00000",
+        "dataset": "champ",
+        "question": "wrong domain, must be excluded by dataset filter",
+        "skill_annotations": ["champ_000"],
+    },
+]
+
+
+@pytest.fixture
+def srabench(tmp_path):
+    corpus_path = tmp_path / "corpus.json"
+    corpus_path.write_text(json.dumps(SRABENCH_CORPUS), encoding="utf-8")
+    instances_path = tmp_path / "instances.json"
+    instances_path.write_text(json.dumps(SRABENCH_INSTANCES), encoding="utf-8")
+    return {"corpus": corpus_path, "instances": instances_path}
+
+
+def test_srabench_files_point_at_the_configured_domain():
+    assert SRABENCH_FILES["instances"] == f"instances/{SRABENCH_DOMAIN}.json"
+    assert SRABENCH_DOMAIN == "medcalcbench"
+
+
+def test_srabench_corpus_filters_to_the_domain_prefix(srabench):
+    docs = {d.name: d for d in SRABenchCorpus(srabench["corpus"]).documents()}
+    assert "medcalcbench_000" in docs
+    assert "medcalcbench_001" in docs
+    # The shared corpus.json also carries other domains; they must not leak in.
+    assert "champ_000" not in docs
+
+
+def test_srabench_description_becomes_the_routing_surface(srabench):
+    docs = {d.name: d for d in SRABenchCorpus(srabench["corpus"]).documents()}
+    assert docs["medcalcbench_000"].trigger_line == "Compute BMI from weight and height."
+    assert docs["medcalcbench_000"].body == "full doc A"
+
+
+def test_srabench_skill_with_no_description_is_dropped(srabench):
+    assert "medcalcbench_002" not in {
+        d.name for d in SRABenchCorpus(srabench["corpus"]).documents()
+    }
+
+
+def test_srabench_ids_reflects_the_domain_filter(srabench):
+    ids = SRABenchCorpus(srabench["corpus"]).ids()
+    assert ids == {"medcalcbench_000", "medcalcbench_001", "medcalcbench_002"}
+
+
+def test_srabench_other_domain_slice_is_independent(srabench):
+    docs = {d.name: d for d in SRABenchCorpus(srabench["corpus"], domain="champ").documents()}
+    assert docs.keys() == {"champ_000"}
+
+
+def test_srabench_labels_carry_the_gold_skill(srabench):
+    loaded = load_srabench_labelled(srabench["instances"])
+    items = {i["prompt"]: i["expected"] for i in loaded}
+    assert items["what is the BMI"] == ["medcalcbench_000"]
+    assert items["stroke risk please"] == ["medcalcbench_001"]
+
+
+def test_srabench_labels_are_dataset_scoped(srabench):
+    # The champ instance must never appear when loading the medcalcbench domain,
+    # even though it sits in the same instances file structure.
+    prompts = [i["prompt"] for i in load_srabench_labelled(srabench["instances"])]
+    assert not any("wrong domain" in p for p in prompts)
+
+
+def test_srabench_an_empty_question_is_dropped(srabench):
+    prompts = [i["prompt"] for i in load_srabench_labelled(srabench["instances"])]
+    assert "" not in prompts
+
+
+def test_srabench_restrict_to_drops_unanswerable_after_truncation(srabench):
+    ids = {"medcalcbench_000", "medcalcbench_001"}
+    items = load_srabench_labelled(srabench["instances"], restrict_to=ids)
+    prompts = {i["prompt"] for i in items}
+    assert "unanswerable after truncation" not in prompts
+    assert "what is the BMI" in prompts
+
+
+def test_srabench_has_no_negatives_so_false_alarms_are_unmeasurable(srabench):
+    items = load_srabench_labelled(srabench["instances"])
+    assert all(i["expected"] for i in items), (
+        "every SRA-Bench instance has a gold skill — a false-alarm rate cannot "
+        "be measured here either, and any result quoted from it carries the gap"
+    )
+
+
+def test_srabench_fingerprint_changes_with_domain(srabench):
+    fp_default = SRABenchCorpus(srabench["corpus"]).fingerprint()
+    fp_other = SRABenchCorpus(srabench["corpus"], domain="champ").fingerprint()
+    assert fp_default != fp_other
