@@ -377,3 +377,24 @@ prompts:
 
 Four misses in thirteen prompts, on a corpus this project wrote, at the
 configuration it calibrated. Recorded rather than smoothed.
+
+## Body-scorer arm (2026-08-04)
+
+`oiax` embeds only the `**Agent-trigger:**` routing surface. The claim that
+body text carries no signal beyond the routing surface was **untested** until
+now. Measured against the reference corpus:
+
+| configuration | recall@2 | precision | F1 | top-1 | false alarms |
+|---|---|---|---|---|---|
+| incumbent (lexical + semantic) | 0.648 | 0.603 | 0.625 | 0.673 | 0.000 |
+| with body scorer (3-arm RRF) | 0.648 | **0.515** | 0.574 | 0.673 | 0.000 |
+| **delta** | **0.000** | **-0.089** | **-0.051** | 0.000 | 0.000 |
+
+Body embedding adds noise, not signal: precision drops 8.9pp with zero recall
+gain. The quality leg of "body is never embedded" is now tested rather than
+asserted. The stability leg (a body edit does not move the routing vector) is
+the one that holds.
+
+The body scorer ships behind a `body_scorer=False` flag as the measurement
+arm, not the default. `python -m oiax.eval.route_eval score ./policies/ <
+labelled.jsonl` accepts `--body-scorer` to reproduce this table.

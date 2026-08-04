@@ -273,7 +273,7 @@ SWEEP_LEX = (0.03, 0.05, 0.08, 0.10, 0.15)
 SWEEP_SEM = (0.20, 0.25, 0.30, 0.35, 0.45, 0.55)
 
 
-def print_sweep(corpus_dir: str, items: list[dict[str, Any]]) -> None:
+def print_sweep(corpus_dir: str, items: list[dict[str, Any]], **kwargs: Any) -> None:
     """Grid the admission floors and print one row per configuration.
 
     Reproduces the calibration behind the shipped defaults. The shipped point is
@@ -283,7 +283,9 @@ def print_sweep(corpus_dir: str, items: list[dict[str, Any]]) -> None:
     print(f"{'lex':>6} {'sem':>6} {'recall':>8} {'prec':>7} {'F1':>7} {'top-1':>7} {'falarm':>7}")
     for lex in SWEEP_LEX:
         for sem in SWEEP_SEM:
-            m = aggregate(evaluate(corpus_dir, items, lex_threshold=lex, sem_threshold=sem))
+            m = aggregate(evaluate(
+                corpus_dir, items, lex_threshold=lex, sem_threshold=sem, **kwargs
+            ))
             shipped = " <- shipped" if (lex, sem) == (LEX_FLOOR, SEM_FLOOR) else ""
             print(
                 f"{lex:6.2f} {sem:6.2f} {m.recall:8.3f} {m.precision:7.3f} "
@@ -307,6 +309,7 @@ def calibrate(
     arm_id: str | None = None,
     supercede: str | None = None,
     arms_path: str | None = None,
+    **kwargs: Any,
 ) -> int:
     """Find this corpus's operating point and record what it was measured on.
 
@@ -336,7 +339,9 @@ def calibrate(
     rows: list[tuple[float, float, Metrics]] = []
     for lex in _LEX_GRID:
         for sem in _SEM_GRID:
-            m = aggregate(evaluate(corpus_dir, items, lex_threshold=lex, sem_threshold=sem))
+            m = aggregate(evaluate(
+                corpus_dir, items, lex_threshold=lex, sem_threshold=sem, **kwargs
+            ))
             rows.append((lex, sem, m))
 
     print(f"{'lex':>5} {'sem':>5} {'recall':>7} {'prec':>7} {'F1':>7} {'top1':>7} {'falarm':>7}")
@@ -407,13 +412,13 @@ def calibrate(
             "model_id": point.model_id,
             "corpus_id": point.corpus_id,
             "corpus_size": point.corpus_size,
-            "labelled_set": best.n,
+            "labelled_set": best.metrics.get("labelled_prompts", 0),
             "measured": point.measured,
             "superseded_by": "",
             "metrics": {k: v for k, v in point.metrics.items()
                        if k != "labelled_prompts" and k != "negatives"},
-            "metrics_n": best.n,
-            "metrics_negatives": best.n_negative,
+            "metrics_n": best.metrics.get("labelled_prompts", 0),
+            "metrics_negatives": best.metrics.get("negatives", 0),
         }
         _append_arm_entry(arms_path, arms_entry)
         # Mark the superseded entry
@@ -614,6 +619,13 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="calibrate: arms record path; arms: path to view (default: eval/corpora/ARMS.jsonl)",
     )
+    parser.add_argument(
+        "--body-scorer",
+        action="store_true",
+        dest="body_scorer",
+        default=False,
+        help="enable the body-scorer measurement arm (default: off)",
+    )
     parsed = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     if parsed.command == "arms":
@@ -641,8 +653,12 @@ def main(argv: list[str] | None = None) -> int:
         print("No labelled examples on stdin.", file=sys.stderr)
         return 1
 
+    extra_kwargs: dict[str, Any] = {}
+    if parsed.body_scorer:
+        extra_kwargs["body_scorer"] = True
+
     if parsed.command == "sweep":
-        print_sweep(parsed.corpus_dir, items)
+        print_sweep(parsed.corpus_dir, items, **extra_kwargs)
     elif parsed.command == "calibrate":
         return calibrate(
             parsed.corpus_dir,
@@ -652,9 +668,10 @@ def main(argv: list[str] | None = None) -> int:
             arm_id=parsed.arm_id,
             supercede=parsed.supercede,
             arms_path=parsed.arms_file,
+            **extra_kwargs,
         )
     else:
-        print_summary(evaluate(parsed.corpus_dir, items))
+        print_summary(evaluate(parsed.corpus_dir, items, **extra_kwargs))
     return 0
 
 
