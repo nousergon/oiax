@@ -279,6 +279,138 @@ Two consequences worth stating rather than burying:
 - The published SkillRet baselines are not reproduced here, so these are absolute
   numbers rather than a head-to-head placement.
 
+## Out-of-org results — SRA-Bench (second corpus, two orders of magnitude from SkillRet)
+
+`semantic-context-routing-policy.md` §7.2 items 6-8 requires **at least two**
+out-of-org corpora spanning two orders of magnitude of size, a losing score
+published rather than tuned away, and the operating point's transfer between
+corpora reported rather than assumed. SkillRet alone cannot supply any of the
+three: one corpus cannot show a design property holds *across* scales, only
+that it held on the one large corpus measured.
+
+**[SRA-Bench](https://huggingface.co/datasets/WeihangSu/SRA-Bench)**
+(`WeihangSu/SRA-Bench`, MIT, arXiv:2604.24594) — a skill-retrieval-augmentation
+benchmark: one shared 26,262-skill pool plus six task-domain instance files.
+This adapter scores the **medcalcbench domain slice**: 55 skills whose id
+starts with `medcalcbench_` (medical risk-score and dosage calculators —
+"CHA2DS2-VASc Score", "Body Mass Index (BMI)", ...) and the 1,100 instances
+that name one of them as gold. Nothing is vendored; `fetch_srabench()`
+downloads the shared corpus file (~232 MB, immutable, cached) plus the domain
+instance file to a cache directory you name.
+
+```python
+from oiax.eval.benchmarks import SRABenchCorpus, load_srabench_labelled, fetch_srabench
+paths = fetch_srabench("~/.cache/oiax/srabench")
+corpus = SRABenchCorpus(paths["corpus"])                 # medcalcbench_* only
+items = load_srabench_labelled(paths["instances"], restrict_to=corpus.ids())
+```
+
+**55 documents is a documented subset of a larger public release, not an
+independent download.** SRA-Bench ships one corpus file shared by all six
+domains — there is no per-domain corpus artifact upstream. Restricting to the
+`medcalcbench_` prefix is this adapter's choice: the other 25,626 entries in
+the shared file are filtered out before the index is built and never scored
+against. Every kept document and every kept query is verbatim upstream data.
+
+**log10(6,006 / 55) ≈ 2.04** — SkillRet's full corpus is just over two orders
+of magnitude larger than this slice, and both are real, non-author-written,
+currently-downloadable corpora with queries and relevance judgements in
+classic IR shape.
+
+### Measured 2026-08-04, shipped floors, full domain slice
+
+| metric | value |
+|---|---:|
+| documents | 55 |
+| queries | 1,100 |
+| recall@2 | **0.569** |
+| precision | 0.285 |
+| F1 | 0.380 |
+| top-1 accuracy | **0.406** |
+| false-alarm rate | 0.000 *(vacuous — see Bounds)* |
+| index build | 1.5-1.6 s (55 docs, cold) |
+| route | ~4.4 ms/query, warm |
+
+### This is the losing score — published, not tuned away
+
+**On SkillRet the hybrid beats lexical-only. On SRA-Bench it is the reverse.**
+
+| configuration | recall@2 | top-1 | precision | F1 |
+|---|---:|---:|---:|---:|
+| **hybrid, shipped floors** | 0.569 | 0.406 | 0.285 | 0.380 |
+| **lexical only (semantic disabled)** | **0.613** | **0.487** | 0.318 | **0.418** |
+| semantic only (lexical disabled) | 0.380 | 0.309 | 0.221 | 0.280 |
+
+Lexical-only beats the shipped hybrid by **+4.4pp recall@2** and **+8.1pp
+top-1** — the semantic scorer is net-negative on this corpus at the shipped
+floors, not merely inert the way it was on SkillRet's full 6,006. A plausible
+reason, stated as a hypothesis rather than a finding: MedCalc-Bench queries are
+multi-paragraph clinical case notes that often name the calculator's own
+clinical vocabulary directly (a note mentioning atrial fibrillation and a
+stroke-risk question shares surface tokens with "CHA2DS2-VASc" more than it
+shares embedding-space proximity with the right calculator among 54 similarly
+narrow, similarly-worded siblings) — lexical overlap dominates on a corpus of
+many narrowly-scoped documents describing adjacent clinical instruments. Not
+verified against SkillRet's structure, offered as a difference worth naming
+rather than explaining away.
+
+### Does the operating point transfer? No — and recalibrating does not fully recover it either
+
+A full grid sweep (`_LEX_GRID` × `_SEM_GRID`, the same grid `calibrate` uses)
+against this corpus, shipped point marked:
+
+| lex | sem | recall@2 | prec | F1 | top-1 | |
+|---|---|---:|---:|---:|---:|---|
+| 0.05 | 0.35 | 0.607 | 0.304 | 0.405 | 0.463 | |
+| 0.10 | 0.25 | 0.569 | 0.285 | 0.380 | 0.406 | **shipped** |
+| 0.10 | 0.35 | 0.611 | 0.312 | 0.413 | 0.464 | |
+| 0.15 | 0.30 | 0.555 | 0.328 | 0.412 | 0.406 | |
+| **0.15** | **0.35** | 0.544 | **0.366** | **0.437** | 0.425 | **best F1 in grid** |
+
+Every negative in this labelled set is absent (see Bounds), so the
+zero-false-alarm gate that `calibrate` enforces passes vacuously everywhere on
+this grid — nothing here is excluded on that basis, unlike the reference
+corpus's calibration run.
+
+**Recalibrating helps, but does not recover what disabling the semantic scorer
+gets for free.** The best-F1 point in the grid (`lex=0.15, sem=0.35`) still
+trails plain lexical-only on both recall@2 (0.544 vs 0.613) and top-1 (0.425
+vs 0.487) — the two metrics this project weights most. So the honest answer to
+§7.2 item 8 on this corpus is: **the shipped operating point does not
+transfer, and neither does "hybrid" as a design choice** — for this corpus,
+`sem_threshold` set high enough to admit almost nothing would outperform every
+point measured here, which is a different failure mode from SkillRet's (floors
+turned inert but the hybrid's *ranking* advantage held). Two corpora, two
+different transfer stories — reported as measured, not reconciled into one
+number.
+
+### Bounds on all of the above
+
+- **No negatives, same gap as SkillRet.** Every medcalcbench instance names a
+  gold skill, so the false-alarm rate — the number oiax actually calibrates
+  against — is not measurable on this benchmark either, and the 0.000 above is
+  vacuous rather than evidence the router stays quiet.
+- **A substitution was made, same shape as SkillRet's.** oiax scores an
+  authored *routing surface*; SRA-Bench skills carry a `description` field
+  used in its place ("Compute BMI from weight (kg) and height (cm)."). It
+  reads closer to "when this applies" than SkillRet's free-text description
+  does — these are single-purpose calculators, not general tools — but it is
+  still a description standing in for a trigger line, and no adjustment has
+  been made for that gap.
+- **Queries are real clinical case reports** (165-11,297 characters, mean
+  ~3,000), drawn from published case studies rather than authored or
+  LLM-generated for this benchmark — a third query register alongside
+  SkillRet's short GitHub-derived queries and the reference corpus's
+  engineer-voice prompts.
+- **The divergence signal fired correctly**: this corpus separates at ~1.00
+  against the operating point's calibration separability of 0.55 — `Index.
+  divergence()` reports it, the same mechanism that caught SkillRet at every
+  size.
+- **One domain slice, not a cross-domain result.** champ (89 skills) and
+  bigcodebench (139 skills) are the other candidate slices in the same file;
+  they were not run for this result, and a claim generalizing this finding
+  across all of SRA-Bench's domains would be unmeasured.
+
 ## `reference_siblings.jsonl` — the harmful-sibling set
 
 Recall, precision and the false-alarm rate are all blind to one failure: routing

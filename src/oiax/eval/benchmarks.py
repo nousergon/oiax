@@ -33,6 +33,50 @@ Reported as measured; not adjusted for.
 5,801 distinct names, and the qrels key on id. Keying by name would silently
 merge 205 distinct skills into their neighbours — and those collisions are
 themselves the same-family population that harmful-sibling work is about.
+
+## SRA-Bench
+
+`WeihangSu/SRA-Bench <https://huggingface.co/datasets/WeihangSu/SRA-Bench>`_
+(MIT, arXiv:2604.24594) — a skill-retrieval-augmentation benchmark: a shared
+26,262-skill pool plus six task-domain instance files, each instance a real
+question with the gold skill id(s) needed to answer it.
+
+**Second out-of-org corpus, at a different order of magnitude from SkillRet
+(policy §7.2 items 6-8).** SkillRet is 6,006 documents; SkillRet alone cannot
+show whether a design holds at a different scale, only whether it holds on one
+large corpus. This adapter scores the **MedCalc-Bench domain slice**: the
+55 skills whose id starts with ``medcalcbench_`` (medical risk-score and
+dosage calculators, e.g. "CHA2DS2-VASc Score", "Body Mass Index (BMI)") and
+the 1,100 instances that name one of them as gold. 55 documents against
+SkillRet's 6,006 is a ~109x gap — just over two orders of magnitude
+(log10 ≈ 2.04) — and lands squarely in the "tens" the policy calls for.
+
+**The corpus is a documented subset of a larger public release, not an
+independent download.** SRA-Bench ships one corpus file shared by all six
+domains; there is no per-domain corpus artifact upstream. Restricting to the
+``medcalcbench_`` prefix is this adapter's choice, stated because it is
+material: the 25,626 non-medcalcbench entries in the shared file are never
+scored against and never enter the index. Every kept document and every kept
+query is verbatim upstream data — nothing here is authored or relabelled.
+
+**The substitution this adapter makes, same shape as SkillRet's:** SRA-Bench
+skills carry a ``description`` field ("Compute BMI from weight (kg) and height
+(cm)."), used as the routing surface in place of an authored trigger line. It
+reads closer to "when this applies" than SkillRet's free-text description
+does, because SRA-Bench skills are single-purpose calculators rather than
+general-purpose tools — but it is still a description standing in for a
+trigger line, and the gap is reported as measured, not adjusted for.
+
+**No negatives, same bound as SkillRet.** Every MedCalc-Bench instance names
+at least one gold skill, so the false-alarm rate — the number oiax actually
+calibrates against — is not measurable on this benchmark either.
+
+**Queries are real clinical case reports, not engineering prose.** Each
+question is a multi-paragraph patient note (165-11,297 characters, mean
+~3,000) drawn from published case studies, structurally unlike both
+SkillRet's short GitHub-derived queries and the reference corpus's
+engineer-voice prompts — a third register, for whatever that is worth against
+a router tuned on the other two.
 """
 
 from __future__ import annotations
@@ -49,14 +93,36 @@ from oiax.corpus import Document
 
 __all__ = [
     "SKILLRET_FILES",
+    "SRABENCH_DOMAIN",
+    "SRABENCH_FILES",
+    "SRABenchCorpus",
     "SkillRetCorpus",
     "family_confusion",
     "fetch",
+    "fetch_srabench",
     "load_skillret_labelled",
+    "load_srabench_labelled",
     "subsample",
 ]
 
 _HF_BASE = "https://huggingface.co/datasets/ThakiCloud/SKILLRET/resolve/main"
+_SRABENCH_HF_BASE = "https://huggingface.co/datasets/WeihangSu/SRA-Bench/resolve/main"
+
+#: The domain slice this adapter scores — tens-of-documents end of the size
+#: curve. Chosen over champ (89 skills) and bigcodebench (139 skills) because
+#: it clears a full two orders of magnitude against SkillRet's 6,006
+#: (log10(6006/55) ≈ 2.04) and every instance names exactly one gold skill,
+#: the same single-label IR shape SkillRet has.
+SRABENCH_DOMAIN = "medcalcbench"
+
+#: The two files this adapter needs. ``corpus.json`` (~232 MB) is the full
+#: 26,262-skill pool shared by all six SRA-Bench domains — there is no
+#: per-domain corpus artifact upstream, so the whole file is fetched and
+#: :class:`SRABenchCorpus` filters it down at read time.
+SRABENCH_FILES: dict[str, str] = {
+    "corpus": "corpus/corpus.json",
+    "instances": f"instances/{SRABENCH_DOMAIN}.json",
+}
 
 #: The three files the test split needs. The full ``data/skills.jsonl`` (335 MB)
 #: is the train+test corpus and is deliberately not used: scoring against the
@@ -90,6 +156,26 @@ def fetch(cache_dir: str | Path, *, files: dict[str, str] | None = None) -> dict
             dest = cache / "qrels.jsonl"
         if not dest.exists() or dest.stat().st_size == 0:
             urllib.request.urlretrieve(f"{_HF_BASE}/{rel}", dest)  # noqa: S310
+        out[key] = dest
+    return out
+
+
+def fetch_srabench(
+    cache_dir: str | Path, *, files: dict[str, str] | None = None
+) -> dict[str, Path]:
+    """Download SRA-Bench's shared corpus and one domain's instances.
+
+    Same contract as :func:`fetch`: skips a file that already exists (the
+    corpus is ~232 MB and immutable), raises on any failure rather than
+    scoring against a partial download.
+    """
+    cache = Path(cache_dir)
+    cache.mkdir(parents=True, exist_ok=True)
+    out: dict[str, Path] = {}
+    for key, rel in (files or SRABENCH_FILES).items():
+        dest = cache / ("corpus.json" if key == "corpus" else "instances.json")
+        if not dest.exists() or dest.stat().st_size == 0:
+            urllib.request.urlretrieve(f"{_SRABENCH_HF_BASE}/{rel}", dest)  # noqa: S310
         out[key] = dest
     return out
 
@@ -207,6 +293,91 @@ def load_skillret_labelled(
                 if not all(e in restrict_to for e in expected):
                     continue
             prompt = (rec.get("query") or "").strip()
+            if prompt:
+                items.append({"prompt": prompt, "expected": expected})
+    return items
+
+
+@dataclass
+class SRABenchCorpus:
+    """One SRA-Bench domain slice as an oiax :class:`~oiax.corpus.Corpus`.
+
+    ``corpus.json`` is the full 26,262-skill pool shared by every SRA-Bench
+    domain. This class filters it to the skills whose id starts with
+    ``f"{domain}_"`` — :data:`SRABENCH_DOMAIN` (``medcalcbench``, 55 skills)
+    by default. Filtering happens in :meth:`documents`/:meth:`ids`, never at
+    fetch time, so the cached ``corpus.json`` stays reusable across domains.
+    """
+
+    path: str | Path
+    domain: str = SRABENCH_DOMAIN
+
+    def _records(self) -> Iterator[dict[str, Any]]:
+        with Path(self.path).open(encoding="utf-8") as fh:
+            for rec in json.load(fh):
+                if rec.get("skill_id", "").startswith(f"{self.domain}_"):
+                    yield rec
+
+    def fingerprint(self) -> str:
+        """Hash of file path + mtime + domain — see :meth:`SkillRetCorpus.fingerprint`."""
+        import hashlib as _hashlib
+
+        h = _hashlib.sha256()
+        h.update(str(self.path).encode("utf-8"))
+        h.update(self.domain.encode("utf-8"))
+        try:
+            h.update(str(Path(self.path).stat().st_mtime_ns).encode("utf-8"))
+        except OSError:
+            pass
+        return h.hexdigest()
+
+    def ids(self) -> set[str]:
+        """The skill ids in this domain slice."""
+        return {rec["skill_id"] for rec in self._records()}
+
+    def documents(self) -> Iterator[Document]:
+        for rec in self._records():
+            description = (rec.get("description") or "").strip()
+            if not description:
+                # Same rule as SkillRetCorpus: no routing surface, no document.
+                continue
+            yield Document(
+                name=rec["skill_id"],
+                trigger_line=description,
+                body=rec.get("content") or description,
+            )
+
+
+def load_srabench_labelled(
+    instances_path: str | Path,
+    *,
+    domain: str = SRABENCH_DOMAIN,
+    restrict_to: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    """SRA-Bench instances as oiax labelled items: ``{"prompt", "expected"}``.
+
+    Every MedCalc-Bench instance names exactly one gold skill and every named
+    skill is single-domain (measured: 0 cross-domain references, 0 multi-skill
+    instances in the 1,100-instance file) — the same single-label IR shape
+    SkillRet has, so both corpora are scored the same way.
+
+    ``restrict_to`` mirrors :func:`load_skillret_labelled`: drops instances
+    whose gold skill was filtered out of the corpus slice.
+
+    Note there are **no negatives** here either: every instance names a gold
+    skill, so the false-alarm rate cannot be measured on this benchmark.
+    """
+    items: list[dict[str, Any]] = []
+    with Path(instances_path).open(encoding="utf-8") as fh:
+        for rec in json.load(fh):
+            if rec.get("dataset") != domain:
+                continue
+            expected = [str(s) for s in (rec.get("skill_annotations") or [])]
+            if not expected:
+                continue
+            if restrict_to is not None and not all(e in restrict_to for e in expected):
+                continue
+            prompt = (rec.get("question") or "").strip()
             if prompt:
                 items.append({"prompt": prompt, "expected": expected})
     return items

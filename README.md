@@ -251,7 +251,7 @@ and a 5-document synthetic smoke corpus that is structurally useful and **cannot
 calibrate anything. Judge labels are evidence, not proof — hand-check a slice before
 treating any rate as authoritative.
 
-### Scores on a corpus this project did not write
+### Scores on corpora this project did not write
 
 The numbers above come from a corpus, a prompt set and a labelling with **one
 author — the author of the design they support.** That is a regression surface, not
@@ -259,24 +259,39 @@ evidence. `oiax.eval.benchmarks` maps public benchmarks onto the same interfaces
 score lands somewhere independent. Nothing is vendored; the data is fetched to a cache
 directory you name.
 
-Against **[SkillRet](https://huggingface.co/datasets/ThakiCloud/SKILLRET)** — 6,006
-real skills scraped from public GitHub repos, 4,392 queries, measured 2026-08-03:
+Two out-of-org corpora ship, chosen to span **two orders of magnitude of size**
+(`semantic-context-routing-policy.md` §7.2 items 6-8) — one shows the design holds
+at scale, the other shows whether that holds when the corpus is small instead of
+whether it was a property of one large benchmark:
 
-| documents | recall@2 | top-1 |
-|---:|---:|---:|
-| 200 | 0.828 | 0.787 |
-| 1,000 | 0.657 | 0.630 |
-| 6,006 | **0.407** | **0.547** |
+| corpus | documents | queries | recall@2 | top-1 | measured |
+|---|---:|---:|---:|---:|---|
+| [SkillRet](https://huggingface.co/datasets/ThakiCloud/SKILLRET) (full) | 6,006 | 1,500 | 0.407 | 0.547 | 2026-08-03 |
+| SkillRet (200-doc slice) | 200 | 61 | 0.828 | 0.787 | 2026-08-03 |
+| [SRA-Bench](https://huggingface.co/datasets/WeihangSu/SRA-Bench) (medcalcbench slice) | **55** | 1,100 | **0.569** | **0.406** | 2026-08-04 |
 
-**Recall@2 halves between 200 and 6,006 documents.** The reference-corpus figure does
-not describe behaviour at scale. And the hybrid earns its place where it matters:
-against lexical-only on the full corpus it is **+7.2 pp on top-1** and only +1.4 pp on
-recall@2 — both scorers usually get the right document into the top two, and fusing
-them is what puts it first.
+log10(6,006 / 55) ≈ **2.04** — just over two orders of magnitude. **Recall@2 halves
+between SkillRet's 200-doc slice and its full 6,006**, and SRA-Bench's 55-document
+corpus scores lower still on both metrics than SkillRet's 200-doc slice — corpus
+size alone does not explain the SRA-Bench number; see the ablation below.
+
+**The operating point does not transfer to SRA-Bench, and this is a losing
+score published as such, not tuned away.** On SkillRet's full corpus the hybrid
+beats lexical-only by +7.2pp top-1. On SRA-Bench it is the other way round:
+lexical-only beats the shipped hybrid by **+8.1pp top-1** (0.487 vs 0.406) and
+**+4.4pp recall@2** (0.613 vs 0.569) — the semantic scorer is net-negative on
+this corpus at the shipped floors. A full grid sweep on SRA-Bench finds a
+better-F1 hybrid point (`lex=0.15, sem=0.35`, F1 0.437) but it still trails
+plain lexical-only on both recall@2 (0.544) and top-1 (0.425). **Per-corpus
+recalibration would help on SRA-Bench, but even the best hybrid configuration
+found does not recover what disabling the semantic scorer gets for free** —
+the opposite conclusion from SkillRet, where the hybrid's ranking advantage held
+even though the floors turned out to be nearly inert at scale.
 
 Full tables, the ablations, and the bounds that limit all of it —
-no negatives in the benchmark, LLM-generated queries, and a material substitution of
-`description` for an authored routing surface — are in
+no negatives in either benchmark, a material substitution of `description` for
+an authored routing surface in both, and (SRA-Bench only) a domain slice taken
+from a shared multi-domain corpus file — are in
 [`src/oiax/eval/corpora/README.md`](src/oiax/eval/corpora/README.md).
 
 ## Calibration — the shipped floors are one corpus's answer
