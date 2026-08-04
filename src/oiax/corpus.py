@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -31,6 +31,7 @@ class Document:
     name: str
     trigger_line: str
     body: str
+    depends_on: list[str] = field(default_factory=list)
 
 
 @runtime_checkable
@@ -92,13 +93,22 @@ class PolicyDirCorpus:
             return None
 
         trigger_line = ""
+        depends_on: list[str] = []
         for line in text.splitlines():
             if "**Agent-trigger:**" in line:
-                # Extract everything after the colon
                 _, sep, after = line.partition("**Agent-trigger:**")
                 if sep:
                     trigger_line = after.strip()
-                break
+            # Supported dependency markers in the same header block.
+            # Adding one needs no router change — the edge is just data.
+            stripped = line.strip()
+            for marker_text in ("**Depends-on:**", "**Requires:**", "**See-also:**"):
+                if marker_text in stripped:
+                    _, sep, after = line.partition(marker_text)
+                    if sep:
+                        names = [n.strip() for n in after.split(",") if n.strip()]
+                        depends_on.extend(names)
+                    break
 
         if not trigger_line:
             return None
@@ -107,4 +117,5 @@ class PolicyDirCorpus:
             name=path.stem,
             trigger_line=trigger_line,
             body=text,
+            depends_on=depends_on,
         )

@@ -353,6 +353,11 @@ class Index:
     operating_point: OperatingPoint = SHIPPED
     corpus_separability: float | None = None
     body: _BodyScorer | None = None
+    #: Adjacency: doc → docs it depends on. Populated from ``Document.depends_on``.
+    #: Keyed by name so expansion costs a key lookup, never a scan.
+    _dep_graph: dict[str, list[str]] = field(default_factory=dict)
+    expand_deps: bool = False
+    expand_budget: int = 4
 
     @property
     def stats(self) -> CorpusStats:
@@ -427,6 +432,9 @@ class Index:
                 "operating_point": self.operating_point.to_dict(),
                 "corpus_separability": self.corpus_separability,
                 "has_body_scorer": self.body is not None,
+                "dep_graph": self._dep_graph,
+                "expand_deps": self.expand_deps,
+                "expand_budget": self.expand_budget,
             },
             (d / "meta.json").open("w"),
         )
@@ -517,6 +525,9 @@ class Index:
             operating_point=operating_point,
             corpus_separability=meta.get("corpus_separability"),
             body=body,
+            _dep_graph=meta.get("dep_graph", {}),
+            expand_deps=meta.get("expand_deps", False),
+            expand_budget=meta.get("expand_budget", 4),
         )
 
     def route(self, prompt: str) -> list[RouteHit]:
@@ -564,10 +575,45 @@ class Index:
                         why[name].append(reason)
 
         ranked = sorted(fused, key=lambda n: (fused[n], best[n]), reverse=True)
-        return [
-            RouteHit(name=name, score=best[name], why=why.get(name, []))
-            for name in ranked[: self.top_k]
-        ]
+        seeds: list[str] = ranked[: self.top_k]
+
+        # ── dependency expansion ──────────────────────────────────────
+        if not self.expand_deps or not self._dep_graph or not seeds:
+            return [
+                RouteHit(name=name, score=best[name], why=why.get(name, []))
+                for name in seeds
+            ]
+
+        expanded: list[str] = list(seeds)
+        seen: set[str] = set(seeds)
+        for seed in seeds:
+            deps = self._dep_graph.get(seed, [])
+            for dep in deps:
+                if dep not in seen and len(expanded) < self.expand_budget:
+                    expanded.append(dep)
+                    seen.add(dep)
+        # Dependency hits carry the score and why of their referrer, marked
+        # so a consumer can distinguish seeds from expansions.
+        hits: list[RouteHit] = []
+        for name in expanded:
+            if name in best:
+                hits.append(RouteHit(
+                    name=name, score=best[name],
+                    why=why.get(name, []) + (
+                        ["dependency of: " + ", ".join(seeds)]
+                        if name not in seeds else []
+                    ),
+                ))
+            else:
+                # Expanded-only — no direct match score; carry which seed
+                # pulled it in at score 0.0 so the reader can see it's an
+                # expansion, not a direct hit.
+                referrers = [s for s in seeds if name in self._dep_graph.get(s, [])]
+                hits.append(RouteHit(
+                    name=name, score=0.0,
+                    why=["dependency of: " + ", ".join(referrers)],
+                ))
+        return hits
 
 
 # ── public API ──────────────────────────────────────────────────────────────
@@ -583,6 +629,8 @@ def build_index(
     top_k: int | None = None,
     cache_dir: str | Path | None = None,
     body_scorer: bool = False,
+    expand_deps: bool = False,
+    expand_budget: int = 4,
 ) -> Index:
     """Build a routing index from a corpus.
 
@@ -678,6 +726,13 @@ def build_index(
         # same as the semantic scorer degrades out on model-load failure.
         body.build(docs)
 
+    # ── dependency graph ──────────────────────────────────────────────
+    dep_graph: dict[str, list[str]] = {}
+    if expand_deps:
+        for d in docs:
+            if d.depends_on:
+                dep_graph[d.name] = list(d.depends_on)
+
     elapsed = (time.perf_counter() - t0) * 1000
     logger.info("index built: %d docs in %.0fms", len(docs), elapsed)
 
@@ -691,6 +746,9 @@ def build_index(
         operating_point=point,
         corpus_separability=semantic.separability(),
         body=body,
+        _dep_graph=dep_graph,
+        expand_deps=expand_deps,
+        expand_budget=expand_budget,
     )
 
     # ── persist to cache ────────────────────────────────────────────────

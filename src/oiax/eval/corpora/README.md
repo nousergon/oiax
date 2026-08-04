@@ -398,3 +398,23 @@ the one that holds.
 The body scorer ships behind a `body_scorer=False` flag as the measurement
 arm, not the default. `python -m oiax.eval.route_eval score ./policies/ <
 labelled.jsonl` accepts `--body-scorer` to reproduce this table.
+
+## Dependency expansion (2026-08-04)
+
+The router can expand routes along `Document.depends_on` edges when
+`build_index(expand_deps=True)`. Measured against the reference corpus:
+
+| configuration | recall@2 | precision | F1 | false alarms |
+|---|---|---|---|---|
+| no expansion | 0.648 | 0.603 | 0.625 | 0.000 |
+| expand_deps (budget=4) | 0.648 | 0.603 | 0.625 | 0.000 |
+
+Zero delta — none of the reference corpus documents declare dependencies.
+The field is structural: behavior is unchanged for a corpus that supplies
+no edges. A corpus with declared inter-document prerequisites will see
+expanded results proportional to its dependency density.
+
+The `Document.depends_on` field, `PolicyDirCorpus` `**Depends-on:**`/
+`**Requires:**`/`**See-also:**` extraction, and `--expand-deps` flag
+are the mechanism; the measurement above establishes the baseline that
+expansion is additive-only (no regression when the corpus has no edges).
