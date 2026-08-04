@@ -61,6 +61,9 @@ class EvalResult:
     #: prompt. Empty when the example carries no sibling label — which is most
     #: of them, and why HSR has its own denominator.
     sibling: list[str] = field(default_factory=list)
+    #: Raw item dict — attached by evaluate() so reporters can access extra
+    #: fields like ``note`` and ``recorded`` that are not part of the eval schema.
+    _item: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def has_sibling_label(self) -> bool:
@@ -156,6 +159,7 @@ def evaluate(
                 missed=[e for e in expected if e not in routed_names],
                 extras=[r for r in routed_names if r not in expected],
                 sibling=item.get("sibling") or [],
+                _item=item,
             )
         )
     return results
@@ -300,6 +304,9 @@ def calibrate(
     *,
     out: str | None = None,
     corpus_id: str | None = None,
+    arm_id: str | None = None,
+    supercede: str | None = None,
+    arms_path: str | None = None,
 ) -> int:
     """Find this corpus's operating point and record what it was measured on.
 
@@ -387,13 +394,195 @@ def calibrate(
         print(f"\nwrote {out}")
     else:
         print("\n(pass --out PATH to write this as a loadable operating point)")
+
+    # ── arms record ──────────────────────────────────────────────────────
+    if arm_id and arms_path:
+        arms_entry = {
+            "arm_id": arm_id,
+            "superseded_id": supercede or "",
+            "lex_floor": point.lex_floor,
+            "sem_floor": point.sem_floor,
+            "rrf_k": point.rrf_k,
+            "top_k": point.top_k,
+            "model_id": point.model_id,
+            "corpus_id": point.corpus_id,
+            "corpus_size": point.corpus_size,
+            "labelled_set": best.metrics.get("labelled_prompts", 0),
+            "measured": point.measured,
+            "superseded_by": "",
+            "metrics": {k: v for k, v in point.metrics.items()
+                       if k != "labelled_prompts" and k != "negatives"},
+            "metrics_n": best.metrics.get("labelled_prompts", 0),
+            "metrics_negatives": best.metrics.get("negatives", 0),
+        }
+        _append_arm_entry(arms_path, arms_entry)
+        # Mark the superseded entry
+        if supercede:
+            _supersede_arm_entry(arms_path, supercede, arm_id)
+        print(f"wrote arm {arm_id} to {arms_path}")
+
     return 0
+
+
+def print_known(corpus_dir: str, items: list[dict[str, Any]]) -> None:
+    """Report on known misses: which still fail, which have recovered.
+
+    A known miss is a labelled example that the current configuration is KNOWN to
+    fail — contributed by a real user in a real turn.  Without a registry, a
+    change that happens to fix one is indistinguishable from noise, and a change
+    that reintroduces one is equally invisible.
+
+    This command runs every known miss through the current configuration and
+    splits them into **recovered** (routes at least one expected label) and
+    **active** (still routes nothing expected).  Zero recoveries is the expected
+    baseline; every recovery is an improvement worth naming.
+    """
+    results = evaluate(corpus_dir, items)
+
+    recovered = [r for r in results if not r.missed]
+    active = [r for r in results if r.missed]
+
+    print(f"Known misses: {len(results)}  ({len(recovered)} recovered, {len(active)} active)\n")
+
+    if recovered:
+        print("RECOVERED — these now route correctly and are no longer misses:")
+        for r in recovered:
+            print(f"  {r.prompt[:80]}")
+            print(f"    -> {r.routed}")
+        print()
+
+    if active:
+        print("ACTIVE — still not routing the expected label:")
+        for r in active:
+            note = r._item.get("note", "")
+            recorded = r._item.get("recorded", "")
+            print(f"  {r.prompt[:80]}")
+            print(f"    expected: {r.expected}   routed: {r.routed}")
+            if recorded:
+                print(f"    recorded: {recorded}")
+            if note:
+                print(f"    note: {note}")
+    else:
+        print("No active misses — every known miss has recovered. Update KNOWN_MISSES.")
+
+    if not results:
+        print("No known misses on file. This is the cheap-case win: nothing to recover.")
+
+
+def _load_known_misses(path: str) -> list[dict[str, Any]]:
+    """Load known misses from a JSONL file, attaching raw fields for reporting."""
+    with open(path) as fh:
+        return load_labelled(fh)
+
+
+# ── arms record ───────────────────────────────────────────────────────────────
+
+
+def _load_arms(path: str) -> list[dict[str, Any]]:
+    """Read the arms record, newest first."""
+    items: list[dict[str, Any]] = []
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    items.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except FileNotFoundError:
+        pass
+    items.reverse()
+    return items
+
+
+def _append_arm_entry(path: str, entry: dict[str, Any]) -> None:
+    """Append one arm entry to the arms record."""
+    with open(path, "a") as fh:
+        fh.write(json.dumps(entry) + "\n")
+
+
+def _supersede_arm_entry(path: str, superseded_id: str, by_id: str) -> None:
+    """Rewrite the arms file: set superseded_by on the named entry."""
+    items: list[dict[str, Any]] = []
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError:
+                items.append(json.loads(line))
+    found = False
+    for item in reversed(items):
+        if item.get("arm_id") == superseded_id:
+            item["superseded_by"] = by_id
+            found = True
+            break
+    if not found:
+        print(f"warning: superseded arm {superseded_id} not found in {path}", file=sys.stderr)
+    with open(path, "w") as fh:
+        for item in items:
+            fh.write(json.dumps(item) + "\n")
+
+
+def print_arms(path: str) -> None:
+    """Print the arms record in chronological order."""
+    items = _load_arms(path)
+    if not items:
+        print("No arms on file. Run `calibrate --arm-id A --arms PATH` to create the first.")
+        return
+
+    active = [i for i in items if not i.get("superseded_by")]
+    superseded = [i for i in items if i.get("superseded_by")]
+
+    print(f"{len(items)} arms on file ({len(active)} active, {len(superseded)} superseded)\n")
+
+    for item in items:
+        active_flag = "← active" if not item.get("superseded_by") else ""
+        print(
+            f"  {item['arm_id']}  {active_flag}\n"
+            f"    lex={item['lex_floor']}  sem={item['sem_floor']}  "
+            f"rrf_k={item['rrf_k']}  top_k={item['top_k']}\n"
+            f"    measured {item.get('measured','?')} on {item.get('corpus_id','?')} "
+            f"({item.get('corpus_size',0)} docs) under {item.get('model_id','?')}"
+        )
+        superseded_by = item.get("superseded_by", "")
+        superseded_id = item.get("superseded_id", "")
+        if superseded_by:
+            print(f"    superseded by: {superseded_by}")
+        if superseded_id:
+            print(f"    superseded: {superseded_id}")
+        metrics = item.get("metrics", {})
+        if metrics:
+            recall = metrics.get("recall@2", "?")
+            prec = metrics.get("precision", "?")
+            f1 = metrics.get("f1", "?")
+            top1 = metrics.get("top1_accuracy", "?")
+            n = item.get("metrics_n", metrics.get("labelled_prompts", "?"))
+            print(f"    recall@2={recall}  prec={prec}  F1={f1}  top-1={top1}  n={n}")
+        note = item.get("note", "")
+        if note:
+            print(f"    note: {note}")
+        print()
+
+
+def _default_arms_path() -> str:
+    import os
+    return os.path.join(os.path.dirname(__file__), "corpora", "ARMS.jsonl")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m oiax.eval.route_eval")
-    parser.add_argument("command", choices=["score", "sweep", "calibrate"])
-    parser.add_argument("corpus_dir")
+    parser.add_argument("command", choices=["score", "sweep", "calibrate", "known", "arms"])
+    parser.add_argument(
+        "corpus_dir",
+        nargs="?",
+        default=None,
+        help="corpus directory (not needed for 'arms')",
+    )
     parser.add_argument(
         "--out",
         default=None,
@@ -404,7 +593,48 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="calibrate only: a name for this corpus, recorded as provenance",
     )
+    parser.add_argument(
+        "--misses",
+        default=None,
+        help="known only: path to known_misses.jsonl (default: eval/corpora/known_misses.jsonl)",
+    )
+    parser.add_argument(
+        "--arm-id",
+        default=None,
+        help="calibrate only: register the winner under this arm id in the arms record",
+    )
+    parser.add_argument(
+        "--supercede",
+        default=None,
+        help="calibrate only: arm id this new configuration supersedes",
+    )
+    parser.add_argument(
+        "--arms",
+        dest="arms_file",
+        default=None,
+        help="calibrate: arms record path; arms: path to view (default: eval/corpora/ARMS.jsonl)",
+    )
     parsed = parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+    if parsed.command == "arms":
+        arms_path = parsed.arms_file or _default_arms_path()
+        print_arms(arms_path)
+        return 0
+
+    if parsed.command == "known":
+        misses_path = parsed.misses
+        if misses_path is None:
+            import os
+            misses_path = os.path.join(
+                os.path.dirname(__file__), "corpora", "known_misses.jsonl"
+            )
+        items = _load_known_misses(misses_path)
+        print_known(parsed.corpus_dir, items)
+        return 0
+
+    if parsed.corpus_dir is None:
+        print("corpus_dir is required for score/sweep/calibrate", file=sys.stderr)
+        return 1
 
     items = load_labelled()
     if not items:
@@ -414,7 +644,15 @@ def main(argv: list[str] | None = None) -> int:
     if parsed.command == "sweep":
         print_sweep(parsed.corpus_dir, items)
     elif parsed.command == "calibrate":
-        return calibrate(parsed.corpus_dir, items, out=parsed.out, corpus_id=parsed.corpus_id)
+        return calibrate(
+            parsed.corpus_dir,
+            items,
+            out=parsed.out,
+            corpus_id=parsed.corpus_id,
+            arm_id=parsed.arm_id,
+            supercede=parsed.supercede,
+            arms_path=parsed.arms_file,
+        )
     else:
         print_summary(evaluate(parsed.corpus_dir, items))
     return 0
