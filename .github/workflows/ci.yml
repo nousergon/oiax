@@ -6,8 +6,14 @@ permissions:
   contents: read
 
 on:
-  pull_request:
-    branches: [main]
+  # No branches: filter here — a pull_request event only fires a workflow
+  # when its `branches:` filter matches the PR's BASE branch, so a stacked
+  # PR (base != main, e.g. #44 based on #43's feat/dep-edges) got zero CI
+  # runs under the old `branches: [main]` scoping. Runs for any base now;
+  # required-status-check enforcement on main is unaffected — that's driven
+  # by branch protection ruleset 20252093 targeting refs/heads/main, not by
+  # this trigger. push: stays scoped to main — unrelated to PR coverage.
+  pull_request: {}
   push:
     branches: [main]
 
