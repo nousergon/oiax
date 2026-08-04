@@ -94,10 +94,18 @@ def load_events(stream: Iterable[str]) -> list[dict[str, Any]]:
 def summarize(events: Iterable[dict[str, Any]]) -> TelemetrySummary:
     s = TelemetrySummary()
     for e in events:
-        s.total += 1
+        # Summed from the event's own `attempts` counter rather than incremented
+        # once per event: `attempts` is the explicit signal that a route was
+        # attempted, so `total` is derived from it instead of being a proxy —
+        # a count of events happens to equal a count of attempts only because
+        # this library has no batching concept yet.
+        s.total += int(e.get("attempts", 1) or 1)
         outcome = e.get("outcome")
         if outcome == "routed":
             s.routed += 1
+            # `returned` is the document NAMES for this single event — the
+            # per-document count is a straight sum of that per-event field
+            # across the log, not a re-derivation from anything else.
             for name in e.get("returned") or []:
                 s.per_document[str(name)] += 1
         elif outcome == "abstained":

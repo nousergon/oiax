@@ -71,6 +71,39 @@ def test_event_carries_no_prompt_and_no_path():
         assert forbidden not in keys
 
 
+def test_attempts_defaults_to_one():
+    # No batching concept exists in this library — every event is exactly one
+    # route attempt, independent of what it resolved to.
+    ev = RouteEvent(outcome="abstained")
+    assert ev.attempts == 1
+
+
+def test_attempts_below_one_is_rejected():
+    with pytest.raises(ValueError):
+        RouteEvent(outcome="abstained", attempts=0)
+
+
+def test_a_routed_document_is_recoverable_from_a_single_event():
+    """§7.1's per-document signal: a route to a specific document must be
+    readable off ONE event's own field, not reconstructed by cross-referencing
+    other events or a downstream log.
+    """
+    ev = RouteEvent(outcome="routed", returned=("deployment-policy",), corpus_size=3)
+    # No other event, no log, no aggregation — the name comes straight off
+    # this event's own `returned` field.
+    assert ev.returned == ("deployment-policy",)
+    assert "deployment-policy" in ev.to_dict()["returned"]
+
+
+def test_attempts_and_returned_round_trip_through_a_sink(tmp_path):
+    path = tmp_path / "events.jsonl"
+    set_sink(JsonlSink(path))
+    emit(RouteEvent(outcome="routed", returned=("access-control-policy",), attempts=1))
+    line = json.loads(path.read_text(encoding="utf-8").strip())
+    assert line["attempts"] == 1
+    assert line["returned"] == ["access-control-policy"]
+
+
 # ── sinks ───────────────────────────────────────────────────────────────────
 
 
@@ -221,6 +254,19 @@ def test_summary_counts_outcomes_and_failure_classes():
     assert s.failures["index_build"] == 2
     assert s.per_document["a"] == 2 and s.per_document["b"] == 1
     assert s.degraded_rate == pytest.approx(0.2)
+
+
+def test_summary_total_is_summed_from_the_attempts_field():
+    # `total` is derived from each event's own `attempts` counter, not from
+    # counting events — so it stays correct if a future producer ever emits
+    # a batched event with attempts > 1.
+    events = load_events(
+        [
+            json.dumps({"outcome": "routed", "returned": ["a"], "attempts": 3}),
+            json.dumps({"outcome": "abstained"}),  # no attempts key — defaults to 1
+        ]
+    )
+    assert summarize(events).total == 4
 
 
 def test_report_says_an_empty_log_is_not_healthy():
