@@ -83,10 +83,26 @@ class RouteEvent:
     the warm route is single-digit milliseconds while a per-turn subprocess
     pays imports, model load and index build every turn, and quoting the former
     describes a fraction of a percent of what a turn actually costs.
+
+    ``returned`` already carries the actual document NAMES for this event, not
+    a count — per-document route counts (semantic-context-routing-policy.md
+    §7.1) are therefore derivable from a single event's ``returned`` tuple
+    without cross-referencing any other event or re-deriving anything
+    downstream; :mod:`oiax.eval.telemetry_report` only sums that per-event
+    tuple across a log, it does not infer names it wasn't given. ``attempts``
+    is the separate, additive signal §7.1 also asks for: that a route was
+    attempted AT ALL, independent of what it resolved to. Nothing else on this
+    event records that fact directly — it was previously only inferable from
+    the event's mere existence in the stream, which is an implicit contract
+    rather than a field a consumer can sum. The library has no batching
+    concept, so this is always ``1``; the field exists so a consumer never has
+    to infer "one attempt" from "one event" and so a future batched producer
+    has somewhere to report otherwise.
     """
 
     outcome: Outcome
     returned: tuple[str, ...] = ()      # document names — never bodies, never prompts
+    attempts: int = 1                   # routes attempted by this event; always 1, no batching
     corpus_size: int = 0
     degraded: bool = False              # lexical-only: the embedder did not load
     failure: Failure | None = None
@@ -96,6 +112,11 @@ class RouteEvent:
     operating_point: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        if self.attempts < 1:
+            raise ValueError(
+                "attempts must be at least 1 — an event that recorded zero attempts "
+                "should not have been emitted"
+            )
         if self.outcome == "failed" and self.failure is None:
             raise ValueError(
                 "a failed RouteEvent must name its failure class — an unclassified "
