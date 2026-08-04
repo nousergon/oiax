@@ -407,13 +407,13 @@ def calibrate(
             "model_id": point.model_id,
             "corpus_id": point.corpus_id,
             "corpus_size": point.corpus_size,
-            "labelled_set": best.metrics.get("labelled_prompts", 0),
+            "labelled_set": best.n,
             "measured": point.measured,
             "superseded_by": "",
             "metrics": {k: v for k, v in point.metrics.items()
                        if k != "labelled_prompts" and k != "negatives"},
-            "metrics_n": best.metrics.get("labelled_prompts", 0),
-            "metrics_negatives": best.metrics.get("negatives", 0),
+            "metrics_n": best.n,
+            "metrics_negatives": best.n_negative,
         }
         _append_arm_entry(arms_path, arms_entry)
         # Mark the superseded entry

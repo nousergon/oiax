@@ -9,7 +9,17 @@ import pytest
 
 from oiax import build_index, route
 from oiax.corpus import PolicyDirCorpus
-from oiax.eval.route_eval import EvalResult, aggregate, evaluate, load_labelled, score_labelled
+from oiax.eval.route_eval import (
+    EvalResult,
+    _append_arm_entry,
+    _load_arms,
+    _supersede_arm_entry,
+    aggregate,
+    evaluate,
+    load_labelled,
+    print_arms,
+    score_labelled,
+)
 
 
 def test_eval_result_recall_perfect():
@@ -242,7 +252,7 @@ def test_harmful_sibling_rate_does_not_regress(sibling_labelled):
     assert m.hsr <= HSR_CEILING, f"HSR@2 regressed to {m.hsr:.3f}"
 
 
-# ── known misses ─────────────────────────────────────────────────────────────
+# ── known misses ───────────────────────────────────────────────────────────
 
 KNOWN_MISSES = CORPORA / "known_misses.jsonl"
 
@@ -269,6 +279,12 @@ def test_known_misses_every_entry_has_expected(known):
 
 
 def test_known_misses_the_current_operative_miss_is_still_active(known):
+    """The one carried from policy_router.py should still be a miss.
+
+    It expects incident-management-policy, and the reference corpus does not
+    contain that document. When the corpus gains it, this test will catch the
+    recovery — a change worth naming.
+    """
     results = evaluate(str(REFERENCE_DIR), known)
     active = [r for r in results if r.missed]
     assert len(active) >= 1, (
@@ -278,6 +294,7 @@ def test_known_misses_the_current_operative_miss_is_still_active(known):
 
 
 def test_known_misses_recovery_is_detectable():
+    """A miss that routes the right document IS detected as recovered."""
     with tempfile.TemporaryDirectory() as tmp:
         (Path(tmp) / "test-policy.md").write_text(
             "# Test\n\n**Agent-trigger:** deploying to production\n\nBody.\n"
@@ -287,11 +304,12 @@ def test_known_misses_recovery_is_detectable():
         results = evaluate(tmp, [item])
         recovered = [r for r in results if not r.missed]
         active = [r for r in results if r.missed]
-        assert len(recovered) == 1
-        assert len(active) == 0
+        assert len(recovered) == 1, "a known miss that routes correctly IS a recovery"
+        assert len(active) == 0, "no misses should remain"
 
 
 def test_known_misses_eval_result_carries_raw_item():
+    """The _item field allows reporters to access note/recorded fields."""
     with tempfile.TemporaryDirectory() as tmp:
         (Path(tmp) / "p.md").write_text("**Agent-trigger:** deploying to production\n\nBody.\n")
         item = {"prompt": "how do I deploy to prod?", "expected": ["p"], "recorded": "2026-01-01",
@@ -302,10 +320,6 @@ def test_known_misses_eval_result_carries_raw_item():
 
 
 # ── arms record ──────────────────────────────────────────────────────────────
-
-from oiax.eval.route_eval import _load_arms, _append_arm_entry, _supersede_arm_entry, print_arms
-from io import StringIO
-
 
 def test_arms_file_exists():
     assert (CORPORA / "ARMS.jsonl").exists(), "ARMS.jsonl must be in the eval package"
