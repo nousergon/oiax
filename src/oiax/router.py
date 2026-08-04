@@ -269,6 +269,69 @@ class _SemanticScorer:
         return hits
 
 
+# ── body scorer ──────────────────────────────────────────────────────────────
+
+
+class _BodyScorer:
+    """Cosine similarity over full document bodies, threshold-gated.
+
+    The semantic scorer (§ "Routing surface only") embeds only trigger lines —
+    the short "when this applies" statement. That carries the stability argument
+    (a body edit does not move the vector, so retrieval does not drift on
+    unrelated changes) and an untested quality claim (body prose carries no
+    signal beyond the routing surface). This scorer measures that claim.
+
+    Defaults OFF — it is a measurement arm, not a selection change, until the
+    evidence says otherwise. When enabled, its results rank-fuse alongside the
+    lexical and semantic scorers.
+    """
+
+    def __init__(self, threshold: float = 0.55) -> None:
+        self._threshold = threshold
+        self._doc_names: list[str] = []
+        self._doc_embeddings: np.ndarray | None = None
+
+    def build(self, docs: list[Document]) -> None:
+        """Build embedding matrix over full document bodies."""
+        embedder = get_embedder()
+        if not embedder.ready():
+            self._doc_embeddings = None
+            return
+
+        self._doc_names = [d.name for d in docs]
+        try:
+            matrix = embedder.embed([d.body for d in docs])
+            self._doc_embeddings = matrix if len(matrix) else None
+        except Exception as exc:
+            logger.warning("body embed build failed (%s) — body scorer disabled", exc)
+            self._doc_embeddings = None
+
+    def query(self, prompt: str) -> list[tuple[str, float, list[str]]]:
+        """Score prompt against body embeddings."""
+        if self._doc_embeddings is None:
+            return []
+        embedder = get_embedder()
+        if not embedder.ready():
+            return []
+        try:
+            q_vec = embedder.embed([prompt])
+            if not len(q_vec):
+                return []
+            scores = sklearn_cosine(q_vec, self._doc_embeddings).flatten()
+        except Exception as exc:
+            logger.warning("body query failed: %s", exc)
+            return []
+
+        hits: list[tuple[str, float, list[str]]] = []
+        for i, score in enumerate(scores):
+            fscore = float(score)
+            if fscore < self._threshold:
+                continue
+            hits.append((self._doc_names[i], fscore, ["body match"]))
+        hits.sort(key=lambda x: x[1], reverse=True)
+        return hits
+
+
 # ── index ───────────────────────────────────────────────────────────────────
 
 
@@ -289,6 +352,7 @@ class Index:
     top_k: int = TOP_K
     operating_point: OperatingPoint = SHIPPED
     corpus_separability: float | None = None
+    body: _BodyScorer | None = None
 
     @property
     def stats(self) -> CorpusStats:
@@ -345,6 +409,14 @@ class Index:
             _np.save(d / "semantic_embeddings.npy", self.semantic._doc_embeddings)
         _json.dump(self.semantic._doc_names, (d / "semantic_doc_names.json").open("w"))
 
+        # Body scorer (optional)
+        if self.body is not None and self.body._doc_embeddings is not None:
+            _np.save(d / "body_embeddings.npy", self.body._doc_embeddings)
+        _json.dump(
+            self.body._doc_names if self.body is not None else [],
+            (d / "body_doc_names.json").open("w"),
+        )
+
         # Metadata
         _json.dump(
             {
@@ -354,6 +426,7 @@ class Index:
                 "top_k": self.top_k,
                 "operating_point": self.operating_point.to_dict(),
                 "corpus_separability": self.corpus_separability,
+                "has_body_scorer": self.body is not None,
             },
             (d / "meta.json").open("w"),
         )
@@ -422,6 +495,18 @@ class Index:
         semantic._doc_names = semantic_doc_names
         semantic._doc_embeddings = embeddings
 
+        # Body scorer — optional, may not exist in caches built before 0.4.0
+        body: _BodyScorer | None = None
+        if meta.get("has_body_scorer"):
+            body_doc_names: list[str] = _json.load(
+                (d / "body_doc_names.json").open()
+            )
+            body_emb_path = d / "body_embeddings.npy"
+            body_embeddings = _np.load(body_emb_path) if body_emb_path.exists() else None
+            body = _BodyScorer()
+            body._doc_names = body_doc_names
+            body._doc_embeddings = body_embeddings
+
         return cls(
             lexical=lexical,
             semantic=semantic,
@@ -431,6 +516,7 @@ class Index:
             top_k=meta.get("top_k", TOP_K),
             operating_point=operating_point,
             corpus_separability=meta.get("corpus_separability"),
+            body=body,
         )
 
     def route(self, prompt: str) -> list[RouteHit]:
@@ -459,11 +545,16 @@ class Index:
         """
         lex_hits = self.lexical.query(prompt)
         sem_hits = self.semantic.query(prompt)
+        body_hits = self.body.query(prompt) if self.body is not None else []
+
+        scorer_sets: list[list[tuple[str, float, list[str]]]] = [lex_hits, sem_hits]
+        if body_hits:
+            scorer_sets.append(body_hits)
 
         fused: dict[str, float] = {}
         best: dict[str, float] = {}
         why: dict[str, list[str]] = {}
-        for hits in (lex_hits, sem_hits):
+        for hits in scorer_sets:
             for rank, (name, score, reasons) in enumerate(hits):
                 fused[name] = fused.get(name, 0.0) + 1.0 / (self.rrf_k + rank + 1)
                 if score > best.get(name, 0.0):
@@ -491,6 +582,7 @@ def build_index(
     rrf_k: int | None = None,
     top_k: int | None = None,
     cache_dir: str | Path | None = None,
+    body_scorer: bool = False,
 ) -> Index:
     """Build a routing index from a corpus.
 
@@ -530,8 +622,13 @@ def build_index(
         if known and known != "none" and known == fp:
             cached = Index.load(cache_dir)
             if cached is not None:
-                logger.info("index cache hit: %s (%d docs)", cache_d, cached.doc_count)
-                return cached
+                # A cache built without body_scorer cannot serve a caller
+                # asking for it — the body embeddings don't exist on disk.
+                if body_scorer and cached.body is None:
+                    logger.info("cache hit but body scorer not in cache — rebuilding")
+                else:
+                    logger.info("index cache hit: %s (%d docs)", cache_d, cached.doc_count)
+                    return cached
             # Corrupt cache — fingerprint matched but load failed.
             # Fall through to rebuild.
 
@@ -574,6 +671,13 @@ def build_index(
     semantic = _SemanticScorer(threshold=sem_threshold)
     semantic.build(docs)
 
+    body: _BodyScorer | None = None
+    if body_scorer:
+        body = _BodyScorer(threshold=sem_threshold)
+        # A body embed failure is non-fatal — the body scorer degrades out,
+        # same as the semantic scorer degrades out on model-load failure.
+        body.build(docs)
+
     elapsed = (time.perf_counter() - t0) * 1000
     logger.info("index built: %d docs in %.0fms", len(docs), elapsed)
 
@@ -586,6 +690,7 @@ def build_index(
         top_k=top_k,
         operating_point=point,
         corpus_separability=semantic.separability(),
+        body=body,
     )
 
     # ── persist to cache ────────────────────────────────────────────────
@@ -611,7 +716,7 @@ def _corpus_fingerprint(corpus: Corpus) -> str:
         try:
             fp = corpus.fingerprint()
             if fp:
-                return fp
+                return str(fp)
         except Exception:
             pass
     # Fallback for corpora without fingerprint()

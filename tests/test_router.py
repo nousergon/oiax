@@ -352,3 +352,70 @@ def test_index_save_without_fingerprint():
         assert (cachedir / "fingerprint.txt").read_text().strip() == "none"
         loaded = Index.load(cachedir)
         assert loaded is not None
+
+# ── body scorer ─────────────────────────────────────────────────────────────
+
+
+def test_body_scorer_defaults_off():
+    """Body scorer is not built by default."""
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = _build_tmp_corpus(tmp, [
+            ("deploy", "deploying to production"),
+        ])
+        idx = build_index(PolicyDirCorpus(str(corpus_dir)))
+        assert idx.body is None
+
+
+def test_body_scorer_contributes_to_route_when_enabled():
+    """When enabled, body scorer participates in rank fusion."""
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = _build_tmp_corpus(tmp, [
+            ("deploy", "deploying to production — always test before pushing"),
+            ("security", "security vulnerability scanning and triage"),
+        ])
+        idx = build_index(
+            PolicyDirCorpus(str(corpus_dir)),
+            body_scorer=True,
+            sem_threshold=0.10,
+        )
+        assert idx.body is not None
+        hits = idx.route("always test before pushing")
+        assert len(hits) > 0
+        names = [h.name for h in hits]
+        assert "deploy" in names
+
+
+def test_body_scorer_save_load_roundtrip():
+    """Body scorer survives save/load."""
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = _build_tmp_corpus(tmp, [
+            ("deploy", "deploying to production"),
+            ("security", "security vulnerabilities"),
+        ])
+        idx = build_index(
+            PolicyDirCorpus(str(corpus_dir)),
+            body_scorer=True,
+        )
+        cachedir = Path(tmp) / "cache"
+        idx.save(cachedir, fingerprint="test")
+
+        loaded = Index.load(cachedir)
+        assert loaded is not None
+        assert loaded.body is not None
+        assert loaded.body._doc_names == idx.body._doc_names
+
+
+def test_body_scorer_not_in_cache_triggers_rebuild():
+    """A cache built without body_scorer will not serve a caller asking for it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = _build_tmp_corpus(tmp, [
+            ("deploy", "deploying to production"),
+        ])
+        corpus = PolicyDirCorpus(str(corpus_dir))
+        cachedir = Path(tmp) / "cache"
+
+        idx1 = build_index(corpus, cache_dir=str(cachedir))
+        assert idx1.body is None
+
+        idx2 = build_index(corpus, cache_dir=str(cachedir), body_scorer=True)
+        assert idx2.body is not None
