@@ -68,6 +68,10 @@ class OperatingPoint:
     measured: str = ""  # ISO date
     metrics: dict[str, Any] = field(default_factory=dict)
 
+    # arms-record identity
+    arm_id: str = ""
+    superseded_id: str = ""
+
     def selection_kwargs(self) -> dict[str, Any]:
         """The four numbers, as ``build_index`` keyword arguments."""
         return {
@@ -143,6 +147,8 @@ SHIPPED = OperatingPoint(
         "labelled_prompts": 52,
         "negatives": 3,
     },
+    arm_id="arm-20260803-rrf060",
+    superseded_id="arm-20260731-default",
 )
 
 

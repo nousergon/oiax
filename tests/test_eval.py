@@ -9,7 +9,17 @@ import pytest
 
 from oiax import build_index, route
 from oiax.corpus import PolicyDirCorpus
-from oiax.eval.route_eval import EvalResult, aggregate, evaluate, load_labelled, score_labelled
+from oiax.eval.route_eval import (
+    EvalResult,
+    _append_arm_entry,
+    _load_arms,
+    _supersede_arm_entry,
+    aggregate,
+    evaluate,
+    load_labelled,
+    print_arms,
+    score_labelled,
+)
 
 
 def test_eval_result_recall_perfect():
@@ -307,3 +317,105 @@ def test_known_misses_eval_result_carries_raw_item():
         results = evaluate(tmp, [item])
         assert results[0]._item == item
         assert results[0]._item["note"] == "test note"
+
+
+# ── arms record ──────────────────────────────────────────────────────────────
+
+def test_arms_file_exists():
+    assert (CORPORA / "ARMS.jsonl").exists(), "ARMS.jsonl must be in the eval package"
+
+
+def test_arms_has_entry_for_shipped():
+    arms = _load_arms(str(CORPORA / "ARMS.jsonl"))
+    active = [a for a in arms if not a.get("superseded_by")]
+    assert len(active) >= 1, "at least one active arm must exist"
+
+
+def test_shipped_arm_id_is_in_the_arms_record():
+    from oiax.calibration import SHIPPED
+    arms = _load_arms(str(CORPORA / "ARMS.jsonl"))
+    arm_ids = {a["arm_id"] for a in arms}
+    assert SHIPPED.arm_id in arm_ids, (
+        f"SHIPPED.arm_id={SHIPPED.arm_id!r} not in arms record"
+    )
+
+
+def test_shipped_supersedes_the_entry_it_claims():
+    from oiax.calibration import SHIPPED
+    arms = _load_arms(str(CORPORA / "ARMS.jsonl"))
+    if SHIPPED.superseded_id:
+        superseded = [a for a in arms if a["arm_id"] == SHIPPED.superseded_id]
+        assert len(superseded) == 1, f"superseded arm {SHIPPED.superseded_id} not found"
+        assert superseded[0].get("superseded_by") == SHIPPED.arm_id, (
+            f"superseded entry not marked with superseded_by={SHIPPED.arm_id}"
+        )
+
+
+def test_arms_append_and_supersede():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "arms.jsonl"
+
+        _append_arm_entry(str(path), {
+            "arm_id": "arm-a", "superseded_id": "", "superseded_by": "",
+            "lex_floor": 0.10, "sem_floor": 0.25, "rrf_k": 60, "top_k": 2,
+            "model_id": "m", "corpus_id": "c", "corpus_size": 10,
+            "measured": "2026-01-01", "metrics": {"recall@2": 0.5},
+            "metrics_n": 20, "metrics_negatives": 3,
+        })
+
+        _append_arm_entry(str(path), {
+            "arm_id": "arm-b", "superseded_id": "arm-a", "superseded_by": "",
+            "lex_floor": 0.05, "sem_floor": 0.30, "rrf_k": 60, "top_k": 2,
+            "model_id": "m", "corpus_id": "c", "corpus_size": 10,
+            "measured": "2026-02-01", "metrics": {"recall@2": 0.6},
+            "metrics_n": 20, "metrics_negatives": 3,
+        })
+
+        _supersede_arm_entry(str(path), "arm-a", "arm-b")
+
+        arms = _load_arms(str(path))
+        assert len(arms) == 2
+
+        active = [a for a in arms if not a.get("superseded_by")]
+        assert len(active) == 1
+        assert active[0]["arm_id"] == "arm-b"
+
+        superseded = [a for a in arms if a.get("superseded_by")]
+        assert len(superseded) == 1
+        assert superseded[0]["arm_id"] == "arm-a"
+        assert superseded[0]["superseded_by"] == "arm-b"
+
+
+def test_arms_print_shows_active():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "arms.jsonl"
+        _append_arm_entry(str(path), {
+            "arm_id": "arm-z", "superseded_id": "", "superseded_by": "",
+            "lex_floor": 0.10, "sem_floor": 0.25, "rrf_k": 60, "top_k": 2,
+            "model_id": "m", "corpus_id": "c", "corpus_size": 10,
+            "measured": "2026-01-01", "metrics": {"recall@2": 0.5},
+            "metrics_n": 20, "metrics_negatives": 3,
+        })
+        buf = StringIO()
+        import sys
+        old = sys.stdout
+        sys.stdout = buf
+        try:
+            print_arms(str(path))
+        finally:
+            sys.stdout = old
+        output = buf.getvalue()
+        assert "arm-z" in output
+        assert "← active" in output
+
+
+def test_arms_empty():
+    buf = StringIO()
+    import sys
+    old = sys.stdout
+    sys.stdout = buf
+    try:
+        print_arms("/nonexistent/path/arms.jsonl")
+    finally:
+        sys.stdout = old
+    assert "No arms on file" in buf.getvalue()
