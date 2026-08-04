@@ -585,6 +585,7 @@ class Index:
         ranked = sorted(fused, key=lambda n: (fused[n], best[n]), reverse=True)
 
         # ── representative selection ──────────────────────────────────
+        seeds: list[str]
         if self.representative and self._family_map:
             seen_families: set[str] = set()
             deduped: list[str] = []
@@ -595,9 +596,9 @@ class Index:
                 if fam:
                     seen_families.add(fam)
                 deduped.append(name)
-            seeds: list[str] = deduped[: self.top_k]
+            seeds = deduped[: self.top_k]
         else:
-            seeds: list[str] = ranked[: self.top_k]
+            seeds = ranked[: self.top_k]
 
         # ── dependency expansion ──────────────────────────────────────
         if not self.expand_deps or not self._dep_graph or not seeds:
