@@ -631,3 +631,125 @@ def test_policy_dir_corpus_parses_depends_on():
         assert "test-policy" in deploy.depends_on
         assert "security-policy" in deploy.depends_on
         assert "audit-policy" in deploy.depends_on
+
+
+# ── representative selection ────────────────────────────────────────────────
+
+
+def test_family_defaults_to_empty():
+    """Document.family defaults to ''."""
+    doc = Document(name="test", trigger_line="testing", body="body")
+    assert doc.family == ""
+
+
+def test_representative_keeps_one_per_family():
+    """With representative=True, at most one per family survives in a broader match."""
+    from oiax.corpus import Document as Doc
+
+    def _docs():
+        yield Doc(name="deploy-a", trigger_line="deploying to production",
+                  body="body", family="deploy")
+        yield Doc(name="deploy-b", trigger_line="shipping code live",
+                  body="body", family="deploy")
+        # This one matches the prompt enough to be in the ranked list
+        yield Doc(name="audit", trigger_line="production",
+                  body="body", family="")
+
+    class FamCorpus:
+        def documents(self):
+            yield from _docs()
+
+    idx = build_index(FamCorpus(), representative=True, top_k=2,
+                      sem_threshold=0.10, lex_threshold=0.05)
+    hits = idx.route("how do I deploy to prod?")
+    names = [h.name for h in hits]
+    assert len(names) <= 2
+    assert names[0].startswith("deploy"), f"first should be a deploy sibling, got {names}"
+    # With representative, we should get one from 'deploy' family + audit
+    deploy_count = sum(1 for n in names if n.startswith("deploy"))
+    assert deploy_count == 1, f"should have exactly 1 deploy sibling, got {deploy_count}"
+
+
+def test_representative_defaults_off():
+    """Without representative=True, same-family siblings are both returned."""
+    from oiax.corpus import Document as Doc
+
+    def _docs():
+        yield Doc(name="deploy-a", trigger_line="deploying to production",
+                  body="body", family="deploy")
+        yield Doc(name="deploy-b", trigger_line="shipping code live",
+                  body="body", family="deploy")
+        yield Doc(name="security", trigger_line="security scanning",
+                  body="body", family="")
+
+    class FamCorpus:
+        def documents(self):
+            yield from _docs()
+
+    idx_default = build_index(FamCorpus(), top_k=3, sem_threshold=0.10)
+    idx_rep = build_index(FamCorpus(), representative=True, top_k=3,
+                          sem_threshold=0.10)
+
+    default_names = [h.name for h in idx_default.route("deploying to production")]
+    rep_names = [h.name for h in idx_rep.route("deploying to production")]
+
+    # Without representative, both deploy siblings may appear
+    # With representative, at most one per family
+    deploy_count_default = sum(1 for n in default_names if n.startswith("deploy"))
+    deploy_count_rep = sum(1 for n in rep_names if n.startswith("deploy"))
+    assert deploy_count_default >= deploy_count_rep
+
+
+def test_representative_singleton_family_unchanged():
+    """When no document has a family, representative mode = no change."""
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = _build_tmp_corpus(tmp, [
+            ("deploy", "deploying to production"),
+            ("security", "security vulnerability scanning"),
+        ])
+        corpus = PolicyDirCorpus(str(corpus_dir))
+        idx_default = build_index(corpus)
+        idx_rep = build_index(corpus, representative=True)
+
+        r_default = idx_default.route("how do I deploy to prod?")
+        r_rep = idx_rep.route("how do I deploy to prod?")
+        assert [h.name for h in r_default] == [h.name for h in r_rep]
+
+
+def test_policy_dir_corpus_parses_family():
+    """**Family:** in a markdown file is extracted."""
+    with tempfile.TemporaryDirectory() as tmp:
+        md = Path(tmp) / "deploy.md"
+        md.write_text(
+            "**Agent-trigger:** deploying to production\n"
+            "**Family:** deploy\n\n"
+            "Body text.\n"
+        )
+        corpus = PolicyDirCorpus(str(tmp))
+        docs = list(corpus.documents())
+        deploy = next(d for d in docs if d.name == "deploy")
+        assert deploy.family == "deploy"
+
+
+def test_representative_save_load_roundtrip():
+    """Representative flag and family map survive save/load."""
+    from oiax.corpus import Document as Doc
+
+    def _docs():
+        yield Doc(name="deploy", trigger_line="deploying to production",
+                  body="body", family="deploy")
+        yield Doc(name="security", trigger_line="security scanning",
+                  body="body", family="")
+
+    class FamCorpus:
+        def documents(self):
+            yield from _docs()
+
+    idx = build_index(FamCorpus(), representative=True)
+    with tempfile.TemporaryDirectory() as tmp:
+        cachedir = Path(tmp) / "cache"
+        idx.save(cachedir, fingerprint="test")
+        loaded = Index.load(cachedir)
+        assert loaded is not None
+        assert loaded._family_map == {"deploy": "deploy"}
+        assert loaded.representative is True

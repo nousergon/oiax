@@ -640,6 +640,13 @@ def main(argv: list[str] | None = None) -> int:
         default=4,
         help="max total documents when expanding deps (default: 4)",
     )
+    parser.add_argument(
+        "--representative",
+        action="store_true",
+        dest="representative",
+        default=False,
+        help="select one document per family (default: off)",
+    )
     parsed = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     if parsed.command == "arms":
@@ -673,6 +680,8 @@ def main(argv: list[str] | None = None) -> int:
     if parsed.expand_deps:
         extra_kwargs["expand_deps"] = True
         extra_kwargs["expand_budget"] = parsed.expand_budget
+    if parsed.representative:
+        extra_kwargs["representative"] = True
 
     if parsed.command == "sweep":
         print_sweep(parsed.corpus_dir, items, **extra_kwargs)
