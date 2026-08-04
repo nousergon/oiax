@@ -359,6 +359,9 @@ class Index:
     _dep_graph: dict[str, list[str]] = field(default_factory=dict)
     expand_deps: bool = False
     expand_budget: int = 4
+    #: name -> family_id. Empty family = singleton.
+    _family_map: dict[str, str] = field(default_factory=dict)
+    representative: bool = False
 
     @property
     def stats(self) -> CorpusStats:
@@ -436,6 +439,8 @@ class Index:
                 "dep_graph": self._dep_graph,
                 "expand_deps": self.expand_deps,
                 "expand_budget": self.expand_budget,
+                "family_map": self._family_map,
+                "representative": self.representative,
             },
             (d / "meta.json").open("w"),
         )
@@ -529,6 +534,8 @@ class Index:
             _dep_graph=meta.get("dep_graph", {}),
             expand_deps=meta.get("expand_deps", False),
             expand_budget=meta.get("expand_budget", 4),
+            _family_map=meta.get("family_map", {}),
+            representative=meta.get("representative", False),
         )
 
     def route(self, prompt: str) -> list[RouteHit]:
@@ -576,14 +583,32 @@ class Index:
                         why[name].append(reason)
 
         ranked = sorted(fused, key=lambda n: (fused[n], best[n]), reverse=True)
-        seeds: list[str] = ranked[: self.top_k]
+
+        # ── representative selection ──────────────────────────────────
+        seeds: list[str]
+        if self.representative and self._family_map:
+            seen_families: set[str] = set()
+            deduped: list[str] = []
+            for name in ranked:
+                fam = self._family_map.get(name, "")
+                if fam and fam in seen_families:
+                    continue
+                if fam:
+                    seen_families.add(fam)
+                deduped.append(name)
+            seeds = deduped[: self.top_k]
+        else:
+            seeds = ranked[: self.top_k]
 
         # ── dependency expansion ──────────────────────────────────────
         if not self.expand_deps or not self._dep_graph or not seeds:
-            return [
-                RouteHit(name=name, score=best[name], why=why.get(name, []))
-                for name in seeds
-            ]
+            def _make_hit(name: str) -> RouteHit:
+                why_list = list(why.get(name, []))
+                fam_label = self._family_map.get(name, "")
+                if self.representative and fam_label:
+                    why_list.append(f"family: {fam_label}")
+                return RouteHit(name=name, score=best[name], why=why_list)
+            return [_make_hit(name) for name in seeds]
 
         expanded: list[str] = list(seeds)
         seen: set[str] = set(seeds)
@@ -632,6 +657,7 @@ def build_index(
     body_scorer: bool = False,
     expand_deps: bool = False,
     expand_budget: int = 4,
+    representative: bool = False,
 ) -> Index:
     """Build a routing index from a corpus.
 
@@ -743,6 +769,11 @@ def build_index(
         for d in docs:
             if d.depends_on:
                 dep_graph[d.name] = list(d.depends_on)
+    family_map: dict[str, str] = {}
+    if representative:
+        for d in docs:
+            if d.family:
+                family_map[d.name] = d.family
 
     elapsed = (time.perf_counter() - t0) * 1000
     logger.info("index built: %d docs in %.0fms", len(docs), elapsed)
@@ -760,6 +791,8 @@ def build_index(
         _dep_graph=dep_graph,
         expand_deps=expand_deps,
         expand_budget=expand_budget,
+        _family_map=family_map,
+        representative=representative,
     )
 
     # ── persist to cache ────────────────────────────────────────────────

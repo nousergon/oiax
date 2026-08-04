@@ -32,6 +32,7 @@ class Document:
     trigger_line: str
     body: str
     depends_on: list[str] = field(default_factory=list)
+    family: str = ''
 
 
 @runtime_checkable
@@ -94,6 +95,7 @@ class PolicyDirCorpus:
 
         trigger_line = ""
         depends_on: list[str] = []
+        family = ''
         for line in text.splitlines():
             if "**Agent-trigger:**" in line:
                 _, sep, after = line.partition("**Agent-trigger:**")
@@ -109,6 +111,10 @@ class PolicyDirCorpus:
                         names = [n.strip() for n in after.split(",") if n.strip()]
                         depends_on.extend(names)
                     break
+            if '**Family:**' in stripped:
+                _, sep, after = line.partition('**Family:**')
+                if sep:
+                    family = after.strip()
 
         if not trigger_line:
             return None
@@ -118,4 +124,5 @@ class PolicyDirCorpus:
             trigger_line=trigger_line,
             body=text,
             depends_on=depends_on,
+            family=family,
         )
