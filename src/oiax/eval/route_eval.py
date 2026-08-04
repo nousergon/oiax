@@ -61,6 +61,9 @@ class EvalResult:
     #: prompt. Empty when the example carries no sibling label — which is most
     #: of them, and why HSR has its own denominator.
     sibling: list[str] = field(default_factory=list)
+    #: Raw item dict — attached by evaluate() so reporters can access extra
+    #: fields like ``note`` and ``recorded`` that are not part of the eval schema.
+    _item: dict[str, Any] = field(default_factory=dict, repr=False)
 
     @property
     def has_sibling_label(self) -> bool:
@@ -156,6 +159,7 @@ def evaluate(
                 missed=[e for e in expected if e not in routed_names],
                 extras=[r for r in routed_names if r not in expected],
                 sibling=item.get("sibling") or [],
+                _item=item,
             )
         )
     return results
@@ -390,9 +394,60 @@ def calibrate(
     return 0
 
 
+def print_known(corpus_dir: str, items: list[dict[str, Any]]) -> None:
+    """Report on known misses: which still fail, which have recovered.
+
+    A known miss is a labelled example that the current configuration is KNOWN to
+    fail — contributed by a real user in a real turn.  Without a registry, a
+    change that happens to fix one is indistinguishable from noise, and a change
+    that reintroduces one is equally invisible.
+
+    This command runs every known miss through the current configuration and
+    splits them into **recovered** (routes at least one expected label) and
+    **active** (still routes nothing expected).  Zero recoveries is the expected
+    baseline; every recovery is an improvement worth naming.
+    """
+    results = evaluate(corpus_dir, items)
+
+    recovered = [r for r in results if not r.missed]
+    active = [r for r in results if r.missed]
+
+    print(f"Known misses: {len(results)}  ({len(recovered)} recovered, {len(active)} active)\n")
+
+    if recovered:
+        print("RECOVERED — these now route correctly and are no longer misses:")
+        for r in recovered:
+            print(f"  {r.prompt[:80]}")
+            print(f"    -> {r.routed}")
+        print()
+
+    if active:
+        print("ACTIVE — still not routing the expected label:")
+        for r in active:
+            note = r._item.get("note", "")
+            recorded = r._item.get("recorded", "")
+            print(f"  {r.prompt[:80]}")
+            print(f"    expected: {r.expected}   routed: {r.routed}")
+            if recorded:
+                print(f"    recorded: {recorded}")
+            if note:
+                print(f"    note: {note}")
+    else:
+        print("No active misses — every known miss has recovered. Update KNOWN_MISSES.")
+
+    if not results:
+        print("No known misses on file. This is the cheap-case win: nothing to recover.")
+
+
+def _load_known_misses(path: str) -> list[dict[str, Any]]:
+    """Load known misses from a JSONL file, attaching raw fields for reporting."""
+    with open(path) as fh:
+        return load_labelled(fh)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m oiax.eval.route_eval")
-    parser.add_argument("command", choices=["score", "sweep", "calibrate"])
+    parser.add_argument("command", choices=["score", "sweep", "calibrate", "known"])
     parser.add_argument("corpus_dir")
     parser.add_argument(
         "--out",
@@ -404,7 +459,23 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="calibrate only: a name for this corpus, recorded as provenance",
     )
+    parser.add_argument(
+        "--misses",
+        default=None,
+        help="known only: path to known_misses.jsonl (default: eval/corpora/known_misses.jsonl)",
+    )
     parsed = parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+    if parsed.command == "known":
+        misses_path = parsed.misses
+        if misses_path is None:
+            import os
+            misses_path = os.path.join(
+                os.path.dirname(__file__), "corpora", "known_misses.jsonl"
+            )
+        items = _load_known_misses(misses_path)
+        print_known(parsed.corpus_dir, items)
+        return 0
 
     items = load_labelled()
     if not items:

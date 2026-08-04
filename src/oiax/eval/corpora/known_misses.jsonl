@@ -1,0 +1,1 @@
+{"prompt": "is this a sev2 or a sev3", "expected": ["incident-management-policy"], "recorded": "2026-07-31", "note": "vernacular severity shorthand vs institutional \"severity tiers\" wording — carried from nous-ergon-ops/scripts/policy_router.py; this doc does not exist in the reference corpus, so the entry is a standing miss measuring whether recovery is recognised"}

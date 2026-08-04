@@ -240,3 +240,70 @@ def test_harmful_sibling_rate_does_not_regress(sibling_labelled):
     m = aggregate(evaluate(str(REFERENCE_DIR), sibling_labelled))
     assert m.n_sibling >= 10, "HSR needs a denominator"
     assert m.hsr <= HSR_CEILING, f"HSR@2 regressed to {m.hsr:.3f}"
+
+
+# ── known misses ───────────────────────────────────────────────────────────
+
+KNOWN_MISSES = CORPORA / "known_misses.jsonl"
+
+
+@pytest.fixture(scope="module")
+def known():
+    with KNOWN_MISSES.open(encoding="utf-8") as fh:
+        return load_labelled(fh)
+
+
+def test_known_misses_file_exists():
+    assert KNOWN_MISSES.exists(), "known_misses.jsonl must be in the eval package"
+
+
+def test_known_misses_has_entries(known):
+    assert len(known) >= 1, "at least one known miss must be on file"
+
+
+def test_known_misses_every_entry_has_expected(known):
+    for item in known:
+        assert item.get("prompt"), "every known miss must have a prompt"
+        assert item.get("expected"), "every known miss must have expected labels"
+        assert item.get("recorded"), "every known miss must name when it was recorded"
+
+
+def test_known_misses_the_current_operative_miss_is_still_active(known):
+    """The one carried from policy_router.py should still be a miss.
+
+    It expects incident-management-policy, and the reference corpus does not
+    contain that document. When the corpus gains it, this test will catch the
+    recovery — a change worth naming.
+    """
+    results = evaluate(str(REFERENCE_DIR), known)
+    active = [r for r in results if r.missed]
+    assert len(active) >= 1, (
+        "the standing known miss has recovered — this is worth naming in the "
+        "changelog and in the issue that added the missing document"
+    )
+
+
+def test_known_misses_recovery_is_detectable():
+    """A miss that routes the right document IS detected as recovered."""
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "test-policy.md").write_text(
+            "# Test\n\n**Agent-trigger:** deploying to production\n\nBody.\n"
+        )
+        item = {"prompt": "how do I deploy to prod?", "expected": ["test-policy"],
+                "recorded": "2026-08-03", "note": "test miss"}
+        results = evaluate(tmp, [item])
+        recovered = [r for r in results if not r.missed]
+        active = [r for r in results if r.missed]
+        assert len(recovered) == 1, "a known miss that routes correctly IS a recovery"
+        assert len(active) == 0, "no misses should remain"
+
+
+def test_known_misses_eval_result_carries_raw_item():
+    """The _item field allows reporters to access note/recorded fields."""
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "p.md").write_text("**Agent-trigger:** deploying to production\n\nBody.\n")
+        item = {"prompt": "how do I deploy to prod?", "expected": ["p"], "recorded": "2026-01-01",
+                "note": "test note"}
+        results = evaluate(tmp, [item])
+        assert results[0]._item == item
+        assert results[0]._item["note"] == "test note"
