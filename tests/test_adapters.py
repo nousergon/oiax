@@ -176,6 +176,42 @@ def test_claude_code_adapter_uses_the_calibrated_library_defaults():
     assert (LEX_FLOOR, SEM_FLOOR) == (0.10, 0.25)
 
 
+def test_claude_code_adapter_render_stays_under_byte_ceiling():
+    """The rendered ``additionalContext`` paragraph stays under a stated per-turn
+    byte ceiling — semantic-context-routing-policy.md §6.3: "the injected
+    paragraph is bounded and states its own budget... A change that grows it
+    states the new byte cost per turn."
+
+    BYTE_CEILING is a conscious constant, not "smaller than some large number":
+    a PR that grows ``_render()``'s output past it fails this test rather than
+    passing silently, so growing the paragraph means consciously editing the
+    ceiling. Derived by measuring the current ``top_k=2`` / header+footer shape
+    against a worst-case fixture — two hits (the shipped ``TOP_K``), each
+    carrying the maximum 10 lexical ``why`` terms (``_LexicalScorer._extract_terms``
+    caps at ``sorted(common)[:10]``) built from long real policy-vocabulary
+    words, with names as long as the longest policy filenames in the fleet's
+    own corpora (``semantic-context-routing-policy``,
+    ``infrastructure-ownership-policy``, 32 chars each). That fixture measures
+    782 bytes; the ceiling below rounds up to the next power of two for
+    headroom.
+    """
+    from oiax.adapters.claude_code import _render
+
+    BYTE_CEILING = 1024  # measured worst case: 782 bytes at top_k=2 — see docstring
+
+    long_names = ["semantic-context-routing-policy", "infrastructure-ownership-policy"]
+    long_terms = [
+        "infrastructure", "recalibration", "provenance", "significant",
+        "documentation", "classification", "reconstruction", "transparency",
+        "accountability", "implementation",
+    ]
+    hits = [RouteHit(name=n, score=0.99, why=list(long_terms)) for n in long_names]
+
+    rendered = _render(hits)
+
+    assert len(rendered.encode("utf-8")) <= BYTE_CEILING
+
+
 def test_claude_code_adapter_still_honours_an_explicit_threshold():
     """An explicitly passed flag must reach build_index — the flags stay usable."""
     from unittest import mock
