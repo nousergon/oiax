@@ -7,9 +7,11 @@ These tests verify the public API shape and the core invariants:
 - Lexical-only fallback when embeddings are unavailable
 """
 
+import tempfile
+from pathlib import Path
 from unittest import mock
 
-from oiax.corpus import Document
+from oiax.corpus import Document, PolicyDirCorpus
 from oiax.router import Index, RouteHit, _LexicalScorer, _SemanticScorer, build_index, route
 
 
@@ -216,3 +218,137 @@ def test_build_index_has_no_expansions_parameter():
 
     assert "expansions" not in inspect.signature(build_index).parameters
     assert "expansions" not in inspect.signature(_LexicalScorer.build).parameters
+
+
+# ── index persistence ─────────────────────────────────────────────────────────
+
+
+def _build_tmp_corpus(tmpdir: str, docs: list[tuple[str, str]]) -> Path:
+    """Write markdown files for a minimal corpus and return the directory path."""
+    p = Path(tmpdir)
+    for name, trigger in docs:
+        (p / f"{name}.md").write_text(
+            f"**Agent-trigger:** {trigger}\n\nBody for {name}.\n"
+        )
+    return p
+
+
+def test_index_save_load_roundtrip():
+    """Save and load produces an index that routes identically."""
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = _build_tmp_corpus(tmp, [
+            ("deploy", "deploying to production"),
+            ("security", "security vulnerability scanning"),
+        ])
+        corpus = PolicyDirCorpus(str(corpus_dir))
+        idx = build_index(corpus)
+
+        cachedir = Path(tmp) / "cache"
+        idx.save(cachedir, fingerprint=corpus.fingerprint())
+
+        loaded = Index.load(cachedir)
+        assert loaded is not None
+        assert loaded.doc_count == idx.doc_count
+        assert loaded.rrf_k == idx.rrf_k
+        assert loaded.top_k == idx.top_k
+
+        # Route the same prompt
+        r1 = idx.route("how do I deploy to prod?")
+        r2 = loaded.route("how do I deploy to prod?")
+        assert [h.name for h in r1] == [h.name for h in r2]
+        assert len(r1) > 0
+
+
+def test_index_load_returns_none_for_missing_dir():
+    assert Index.load("/nonexistent/path/cache") is None
+
+
+def test_build_index_cache_hit():
+    """build_index with cache_dir serves a cached index on fingerprint match."""
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = _build_tmp_corpus(tmp, [
+            ("deploy", "deploying to production"),
+            ("security", "security vulnerability scanning"),
+        ])
+        corpus = PolicyDirCorpus(str(corpus_dir))
+        cachedir = Path(tmp) / "cache"
+
+        idx1 = build_index(corpus, cache_dir=str(cachedir))
+        idx2 = build_index(corpus, cache_dir=str(cachedir))
+
+        # Should be a cache hit — same fingerprint
+        assert idx2.doc_count == idx1.doc_count
+        # Route the same
+        r1 = idx1.route("how do I deploy to prod?")
+        r2 = idx2.route("how do I deploy to prod?")
+        assert [h.name for h in r1] == [h.name for h in r2]
+
+
+def test_build_index_cache_miss_on_corpus_change():
+    """Changing the corpus invalidates the cache."""
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = _build_tmp_corpus(tmp, [
+            ("deploy", "deploying to production"),
+            ("security", "security vulnerability scanning"),
+        ])
+        corpus = PolicyDirCorpus(str(corpus_dir))
+        cachedir = Path(tmp) / "cache"
+
+        idx1 = build_index(corpus, cache_dir=str(cachedir))
+
+        # Change a document's trigger line
+        (corpus_dir / "deploy.md").write_text(
+            "**Agent-trigger:** changed trigger entirely\n\nNew body.\n"
+        )
+        idx2 = build_index(corpus, cache_dir=str(cachedir))
+
+        # The old route matched "deploying" — the new one should not
+        r1 = idx1.route("deploying to production")
+        r2 = idx2.route("deploying to production")
+        assert any(h.name == "deploy" for h in r1)
+        assert not any(h.name == "deploy" for h in r2)
+
+
+def test_fingerprint_changes_on_mtime():
+    """Editing a file changes the fingerprint even if the trigger line is the same."""
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = _build_tmp_corpus(tmp, [
+            ("deploy", "deploying to production"),
+        ])
+        corpus1 = PolicyDirCorpus(str(corpus_dir))
+        fp1 = corpus1.fingerprint()
+
+        # Same trigger, but write the file again — mtime changes
+        import time
+        time.sleep(0.01)  # ensure mtime advances
+        (corpus_dir / "deploy.md").write_text(
+            "**Agent-trigger:** deploying to production\n\nSame trigger, different body.\n"
+        )
+        corpus2 = PolicyDirCorpus(str(corpus_dir))
+        fp2 = corpus2.fingerprint()
+
+        assert fp1 != fp2
+
+
+def test_fingerprint_fallback_for_corpus_without_fingerprint():
+    """_corpus_fingerprint works when the corpus lacks a fingerprint() method."""
+    from oiax.router import _corpus_fingerprint
+
+    class SimpleCorpus:
+        def documents(self):
+            yield Document(name="a", trigger_line="test trigger", body="body")
+
+    fp = _corpus_fingerprint(SimpleCorpus())
+    assert isinstance(fp, str) and len(fp) == 64
+
+
+def test_index_save_without_fingerprint():
+    """Save without fingerprint writes 'none' and loads fine."""
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = _build_tmp_corpus(tmp, [("deploy", "deploying to production")])
+        idx = build_index(PolicyDirCorpus(str(corpus_dir)))
+        cachedir = Path(tmp) / "cache"
+        idx.save(cachedir)  # no fingerprint
+        assert (cachedir / "fingerprint.txt").read_text().strip() == "none"
+        loaded = Index.load(cachedir)
+        assert loaded is not None

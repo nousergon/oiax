@@ -38,13 +38,17 @@ CI runs pytest against Python 3.11, 3.12, and 3.13. All three must pass before m
 - Update tests for behavior changes.
 - CI must be green.
 
-## License and sign-off
+## Changing the selection configuration
 
-By contributing, you agree that your contributions will be licensed under the MIT
-license.
+The selection configuration — admission floors, fusion parameters, scorers, the embedding model — is the router's decision rule. Every change ships as an entry in `src/oiax/eval/corpora/ARMS.jsonl`, an append-only record. The rule, and the reasoning:
 
-Every commit must carry a `Signed-off-by:` line certifying the
-[Developer Certificate of Origin](https://developercertificate.org/) — that you wrote
-the patch or otherwise have the right to submit it under MIT. `git commit -s` adds it.
+1. **A challenger is promoted only on a run against the same labelled set as the incumbent**, with both results recorded. "Better on a different set" is not a comparison.
+2. **The incumbent's entry is marked `superseded_by`, never deleted**, so the history is recoverable from the repo rather than from commit archaeology.
+3. **The shipped configuration names its arm id** in `calibration.py`, so the running system and the record cannot disagree.
+4. **`route_eval calibrate` writes the arm entry** when passed `--arm-id` and `--arms` flags. Running it is the default path, not an extra discipline to remember.
 
-MIT is silent on inbound contribution terms, so the sign-off is what records them.
+To view the arms record: `python -m oiax.eval.route_eval arms`.
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the MIT license.
