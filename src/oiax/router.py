@@ -43,6 +43,7 @@ refactored against the oiax product contract.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
@@ -656,30 +657,6 @@ def build_index(
         An `Index` ready for `route()` calls. Cold build ~700ms; the
         embedding model is cached process-wide after first load.
     """
-    # ── cache hit? ──────────────────────────────────────────────────────
-    if cache_dir is not None:
-        cache_d = Path(cache_dir)
-        fp = _corpus_fingerprint(corpus)
-        fp_path = cache_d / "fingerprint.txt"
-        known = ""
-        try:
-            if fp_path.exists():
-                known = fp_path.read_text(encoding="utf-8").strip()
-        except OSError:
-            pass
-        if known and known != "none" and known == fp:
-            cached = Index.load(cache_dir)
-            if cached is not None:
-                # A cache built without body_scorer cannot serve a caller
-                # asking for it — the body embeddings don't exist on disk.
-                if body_scorer and cached.body is None:
-                    logger.info("cache hit but body scorer not in cache — rebuilding")
-                else:
-                    logger.info("index cache hit: %s (%d docs)", cache_d, cached.doc_count)
-                    return cached
-            # Corrupt cache — fingerprint matched but load failed.
-            # Fall through to rebuild.
-
     point = operating_point or SHIPPED
     if operating_point is not None:
         # An EXPLICITLY supplied operating point whose model disagrees with the
@@ -707,6 +684,40 @@ def build_index(
     sem_threshold = point.sem_floor if sem_threshold is None else sem_threshold
     rrf_k = point.rrf_k if rrf_k is None else rrf_k
     top_k = point.top_k if top_k is None else top_k
+
+    # ── cache hit? ──────────────────────────────────────────────────────
+    # The fingerprint must be computed AFTER the thresholds above are resolved
+    # (not the raw, possibly-None, kwargs) — it has to cover the config that
+    # will actually be active, model_id/dimension/thresholds included, or a
+    # config change is invisible to the comparison below (#45).
+    if cache_dir is not None:
+        cache_d = Path(cache_dir)
+        fp = _index_fingerprint(
+            corpus,
+            lex_threshold=lex_threshold,
+            sem_threshold=sem_threshold,
+            rrf_k=rrf_k,
+            top_k=top_k,
+        )
+        fp_path = cache_d / "fingerprint.txt"
+        known = ""
+        try:
+            if fp_path.exists():
+                known = fp_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+        if known and known != "none" and known == fp:
+            cached = Index.load(cache_dir)
+            if cached is not None:
+                # A cache built without body_scorer cannot serve a caller
+                # asking for it — the body embeddings don't exist on disk.
+                if body_scorer and cached.body is None:
+                    logger.info("cache hit but body scorer not in cache — rebuilding")
+                else:
+                    logger.info("index cache hit: %s (%d docs)", cache_d, cached.doc_count)
+                    return cached
+            # Corrupt cache — fingerprint matched but load failed.
+            # Fall through to rebuild.
 
     t0 = time.perf_counter()
     docs = list(corpus.documents())
@@ -753,7 +764,13 @@ def build_index(
 
     # ── persist to cache ────────────────────────────────────────────────
     if cache_dir is not None:
-        fp = _corpus_fingerprint(corpus)
+        fp = _index_fingerprint(
+            corpus,
+            lex_threshold=lex_threshold,
+            sem_threshold=sem_threshold,
+            rrf_k=rrf_k,
+            top_k=top_k,
+        )
         try:
             idx.save(cache_dir, fingerprint=fp)
             logger.info("index cached: %s (%d docs)", cache_dir, idx.doc_count)
@@ -783,6 +800,47 @@ def _corpus_fingerprint(corpus: Corpus) -> str:
     for doc in sorted(corpus.documents(), key=lambda d: d.name):
         h.update(doc.name.encode())
         h.update(doc.trigger_line.encode())
+    return h.hexdigest()
+
+
+def _index_fingerprint(
+    corpus: Corpus,
+    *,
+    lex_threshold: float,
+    sem_threshold: float,
+    rrf_k: int,
+    top_k: int,
+) -> str:
+    """Fingerprint over corpus content AND the configuration the index is
+    built under: embedding model id, embedding dimension, and the active
+    selection thresholds (lexical/semantic admission floors, RRF constant,
+    top-k cap).
+
+    `_corpus_fingerprint()` alone only guards against a *corpus* change — a
+    persisted cache built under one embedding model or one set of thresholds
+    was served, silently, to a caller running a different model or different
+    thresholds, because the cache-hit check compared corpus content only
+    (semantic-context-routing-policy.md §3.6; oiax#45). A model swap or a
+    threshold change is exactly the kind of change a fingerprint exists to
+    catch — cosine distributions and admission floors are not comparable
+    across either axis, the same reasoning `build_index`'s explicit
+    operating-point check above already applies to a caller-supplied point.
+    """
+    embedder = get_embedder()
+    h = hashlib.sha256()
+    h.update(_corpus_fingerprint(corpus).encode())
+    h.update(b"\x00model_id=")
+    h.update(embedder.model_id().encode())
+    h.update(b"\x00dimension=")
+    h.update(str(embedder.dimension()).encode())
+    h.update(b"\x00lex_threshold=")
+    h.update(repr(float(lex_threshold)).encode())
+    h.update(b"\x00sem_threshold=")
+    h.update(repr(float(sem_threshold)).encode())
+    h.update(b"\x00rrf_k=")
+    h.update(str(int(rrf_k)).encode())
+    h.update(b"\x00top_k=")
+    h.update(str(int(top_k)).encode())
     return h.hexdigest()
 
 

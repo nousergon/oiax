@@ -11,7 +11,10 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
+
 from oiax.corpus import Document, PolicyDirCorpus
+from oiax.embedding import set_embedder
 from oiax.router import Index, RouteHit, _LexicalScorer, _SemanticScorer, build_index, route
 
 
@@ -27,6 +30,26 @@ class _FakeCorpus:
 
 def make_doc(name: str, trigger: str, body: str = "") -> Document:
     return Document(name=name, trigger_line=trigger, body=body or f"Body of {name}")
+
+
+class _FakeEmbedder:
+    """A minimal Embedder for testing index-fingerprint sensitivity to model/dim."""
+
+    def __init__(self, model_id: str, dim: int = 4) -> None:
+        self._model_id = model_id
+        self._dim = dim
+
+    def embed(self, texts: list[str]):
+        return np.zeros((len(texts), self._dim), dtype=np.float32)
+
+    def model_id(self) -> str:
+        return self._model_id
+
+    def dimension(self) -> int:
+        return self._dim
+
+    def ready(self) -> bool:
+        return True
 
 
 def test_build_index_accepts_corpus_interface():
@@ -307,6 +330,75 @@ def test_build_index_cache_miss_on_corpus_change():
         r2 = idx2.route("deploying to production")
         assert any(h.name == "deploy" for h in r1)
         assert not any(h.name == "deploy" for h in r2)
+
+
+def test_build_index_cache_miss_on_model_id_change():
+    """A model_id change invalidates the cache — same corpus, same thresholds.
+
+    Pre-#45: the cache-hit check compared corpus content only, so a persisted
+    index built under one embedding model was served, silently, to a caller
+    running a different one — even though cosine distributions are not
+    comparable across models. `Index.load` is only reached on a fingerprint
+    match, so asserting it is NOT called on the second build is a direct
+    rebuild-vs-reuse signal, independent of whether routing happens to differ.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = _build_tmp_corpus(tmp, [
+            ("deploy", "deploying to production"),
+            ("security", "security vulnerability scanning"),
+        ])
+        corpus = PolicyDirCorpus(str(corpus_dir))
+        cachedir = Path(tmp) / "cache"
+
+        set_embedder(_FakeEmbedder("model-a"))
+        try:
+            build_index(corpus, cache_dir=str(cachedir))
+
+            set_embedder(_FakeEmbedder("model-b"))
+            with mock.patch.object(Index, "load") as spy_load:
+                build_index(corpus, cache_dir=str(cachedir))
+                spy_load.assert_not_called()
+        finally:
+            set_embedder(None)
+
+
+def test_build_index_cache_miss_on_threshold_change():
+    """A selection-threshold change (sem_threshold) invalidates the cache.
+
+    Same corpus, same model — only the operating configuration moves. Pre-#45
+    this was served from the stale cache silently, since the fingerprint never
+    covered lex_threshold/sem_threshold/rrf_k/top_k.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = _build_tmp_corpus(tmp, [
+            ("deploy", "deploying to production"),
+            ("security", "security vulnerability scanning"),
+        ])
+        corpus = PolicyDirCorpus(str(corpus_dir))
+        cachedir = Path(tmp) / "cache"
+
+        build_index(corpus, cache_dir=str(cachedir), sem_threshold=0.20)
+
+        with mock.patch.object(Index, "load") as spy_load:
+            build_index(corpus, cache_dir=str(cachedir), sem_threshold=0.35)
+            spy_load.assert_not_called()
+
+
+def test_build_index_cache_hit_when_config_unchanged():
+    """Control for the two tests above: an unchanged model_id and unchanged
+    thresholds DO hit the cache — `Index.load` is reached and reused."""
+    with tempfile.TemporaryDirectory() as tmp:
+        corpus_dir = _build_tmp_corpus(tmp, [
+            ("deploy", "deploying to production"),
+        ])
+        corpus = PolicyDirCorpus(str(corpus_dir))
+        cachedir = Path(tmp) / "cache"
+
+        build_index(corpus, cache_dir=str(cachedir), sem_threshold=0.20)
+
+        with mock.patch.object(Index, "load", wraps=Index.load) as spy_load:
+            build_index(corpus, cache_dir=str(cachedir), sem_threshold=0.20)
+            spy_load.assert_called_once()
 
 
 def test_fingerprint_changes_on_mtime():
