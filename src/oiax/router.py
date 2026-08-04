@@ -594,10 +594,10 @@ class Index:
                     seen.add(dep)
         # Dependency hits carry the score and why of their referrer, marked
         # so a consumer can distinguish seeds from expansions.
-        hits: list[RouteHit] = []
+        dep_hits: list[RouteHit] = []
         for name in expanded:
             if name in best:
-                hits.append(RouteHit(
+                dep_hits.append(RouteHit(
                     name=name, score=best[name],
                     why=why.get(name, []) + (
                         ["dependency of: " + ", ".join(seeds)]
@@ -609,11 +609,11 @@ class Index:
                 # pulled it in at score 0.0 so the reader can see it's an
                 # expansion, not a direct hit.
                 referrers = [s for s in seeds if name in self._dep_graph.get(s, [])]
-                hits.append(RouteHit(
+                dep_hits.append(RouteHit(
                     name=name, score=0.0,
                     why=["dependency of: " + ", ".join(referrers)],
                 ))
-        return hits
+        return dep_hits
 
 
 # ── public API ──────────────────────────────────────────────────────────────
