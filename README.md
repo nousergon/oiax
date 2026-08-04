@@ -503,4 +503,4 @@ All three run in CI on Python 3.11, 3.12 and 3.13 and are required to merge. See
 
 ## License
 
-AGPL-3.0 — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
