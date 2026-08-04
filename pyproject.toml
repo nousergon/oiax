@@ -70,8 +70,9 @@ select = ["E", "F", "I", "W", "UP"]
 # ignore_errors does not help — parsing precedes error filtering.
 python_version = "3.12"
 strict = true
-# sklearn + fastembed deps lack type stubs
+# sklearn + fastembed deps lack type stubs; joblib and scipy (used for
+# index save/load) also ship without complete stubs
 [[tool.mypy.overrides]]
-module = ["sklearn.*", "numpy.*", "fastembed.*"]
+module = ["sklearn.*", "numpy.*", "fastembed.*", "joblib.*", "scipy.*"]
 ignore_missing_imports = true
 follow_imports = "skip"

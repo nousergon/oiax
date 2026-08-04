@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/nousergon/oiax/actions/workflows/ci.yml/badge.svg)](https://github.com/nousergon/oiax/actions/workflows/ci.yml)
 
-oiax routes a free-text prompt against a governance corpus and delivers the policies that bear on that turn — by meaning, before the agent decides, at ~6ms with no network call.
+oiax routes a free-text prompt against a governance corpus and delivers the policies that bear on that turn — by meaning, before the agent decides. Warm route ~4 ms with no network call; per-turn delivered cost depends on the harness (see [Performance](#performance)).
 
 **The retrieval design is for normative text** (policies, coding standards, ADRs, compliance rules), not general knowledge. Four decisions make it correct:
 
@@ -126,9 +126,10 @@ args = ["/absolute/path/to/policies/"]
 ```
 
 **The index lives in the server process**, which is the point: a fresh-process hook pays
-~1.26 s per turn (817 ms of imports, 328 ms of model load, 110 ms of index build, 6 ms of
-routing). Here that happens once at start — measured **248 ms to start on a 15-document
-corpus, then 4.0 ms per `route_policies` call**.
+~670 ms per turn (most of it pulling in numpy/scikit-learn/fastembed) against a
+15-document corpus with a warm model cache. Here that happens once at start —
+measured **248 ms to start on a 15-document corpus, then 4.0 ms per `route_policies`
+call**.
 
 ## Corpus format
 
@@ -186,6 +187,43 @@ so the semantic half never fired and recall sat at 0.185. Rank fusion is scale-f
 
 Defaults are calibrated, not chosen: `src/oiax/eval/corpora/README.md` records the
 sweep, the operating point, and what it was picked over.
+
+## Performance
+
+The warm-route claim and the per-turn delivered cost are **not the same number**.
+Measured against the 15-document reference corpus on a MacBook Pro (M4, warm
+model cache). Run `python scripts/bench_routing.py` to measure your own machine.
+
+```
+stage                             cost
+------------------------------ -------
+import oiax                       630 ms   # numpy, scikit-learn, fastembed
+model load from cache             215 ms
+index build                        37 ms
+route() warm                      3.5 ms
+total (in-process)       885 ms
+
+cache hit (index from disk)         3 ms   # fingerprint-matched, skips build
+```
+
+**The ~4 ms route is real** — it is also ~0.4% of what a turn pays in a
+fresh-process harness (a Claude Code hook, a CI agent).
+
+**The index cache** in `build_index(corpus, cache_dir=...)` persists the built
+index to disk, keyed by a corpus fingerprint. A fingerprint match reads the
+pre-built index from disk instead of importing the scientific stack and
+re-building. Use it in any setup where a persistent process can hold the index.
+
+Two delivery paths:
+
+| Path | Start | Per turn | Use case |
+|---|---|---|---|
+| `build_index(corpus, cache_dir=...)` + `index.route()` | 3 ms (cache hit) | 4 ms | resident process, MCP server |
+| Fresh `route()` per prompt | ~885 ms | ~885 ms | Claude Code hook (no cache) |
+
+The MCP server pays 248 ms once at start, then 4 ms per call — `route()` warm
+is 1.7% of delivered, and the server is the recommended path where a persistent
+process is available.
 
 ## Evaluation harness
 
@@ -465,7 +503,4 @@ All three run in CI on Python 3.11, 3.12 and 3.13 and are required to merge. See
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
-
-Relicensed from AGPL-3.0 on 2026-08-03. Versions up to and including 0.3.0 were
-published under AGPL-3.0 and remain so; 0.3.1 onward is MIT.
+AGPL-3.0 — see [LICENSE](LICENSE).
