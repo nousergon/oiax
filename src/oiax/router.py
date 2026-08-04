@@ -716,7 +716,7 @@ def _corpus_fingerprint(corpus: Corpus) -> str:
         try:
             fp = corpus.fingerprint()
             if fp:
-                return fp
+                return str(fp)
         except Exception:
             pass
     # Fallback for corpora without fingerprint()
