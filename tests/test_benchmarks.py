@@ -9,14 +9,15 @@ CI depend on a host nobody here controls.
 from __future__ import annotations
 
 import json
+import tempfile
 
 import pytest
-
-from oiax.eval.benchmarks import SKILLRET_FILES, _build_family_map, family_confusion
 
 from oiax.eval.benchmarks import (
     SKILLRET_FILES,
     SkillRetCorpus,
+    _build_family_map,
+    family_confusion,
     load_skillret_labelled,
     subsample,
 )
@@ -157,8 +158,6 @@ def test_the_test_split_is_what_gets_fetched():
     assert all("test" in rel for rel in SKILLRET_FILES.values())
 
 # ── family confusion ─────────────────────────────────────────────────────
-
-import tempfile
 
 
 def test_build_family_map_from_skillret_records():
