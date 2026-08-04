@@ -122,6 +122,22 @@ class SkillRetCorpus:
                 if line:
                     yield line
 
+    def fingerprint(self) -> str:
+        """Hash of file path + mtime + first/last skill ids.
+
+        A full content hash of a 112 MB file is too slow; this catches
+        the common cases (file replaced, re-downloaded, different split).
+        """
+        import hashlib as _hashlib
+
+        h = _hashlib.sha256()
+        h.update(str(self.path).encode("utf-8"))
+        try:
+            h.update(str(Path(self.path).stat().st_mtime_ns).encode("utf-8"))
+        except OSError:
+            pass
+        return h.hexdigest()
+
     def ids(self) -> set[str]:
         """The skill ids this corpus contains — the denominator for filtering
         queries whose gold document was truncated away."""
