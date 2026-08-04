@@ -8,6 +8,8 @@ one document per file, the trigger line describing when the document applies.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,6 +45,10 @@ class Corpus(Protocol):
 
     def documents(self) -> Iterator[Document]: ...
 
+    def fingerprint(self) -> str:
+        """A content hash that changes only when the corpus changes."""
+        ...
+
 
 class PolicyDirCorpus:
     """Reads markdown files with `**Agent-trigger:**` headers from a directory.
@@ -62,6 +68,22 @@ class PolicyDirCorpus:
             doc = self._load_doc(md_file)
             if doc is not None:
                 yield doc
+
+    def fingerprint(self) -> str:
+        """Content hash over file names, mtimes and trigger lines.
+
+        Changes when any document is added, removed, renamed, or edited —
+        the mtime catches an edit that preserves the trigger line but changes
+        the body, which matters once the body scoring arm (#22) lands.
+        """
+        h = hashlib.sha256()
+        for md_file in sorted(self._path.glob("*.md")):
+            h.update(md_file.name.encode())
+            h.update(str(md_file.stat().st_mtime_ns).encode())
+            doc = self._load_doc(md_file)
+            if doc is not None:
+                h.update(doc.trigger_line.encode())
+        return h.hexdigest()
 
     @staticmethod
     def _load_doc(path: Path) -> Document | None:

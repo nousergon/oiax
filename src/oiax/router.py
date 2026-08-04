@@ -47,6 +47,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -308,6 +309,130 @@ class Index:
         """
         return divergence(self.stats, self.operating_point)
 
+    # ── persistence ──────────────────────────────────────────────────────
+
+    def save(self, cache_dir: str | Path, fingerprint: str = "") -> None:
+        """Persist this index to a directory, together with a corpus fingerprint.
+
+        A cache hit serves the pre-built index instantly (~6 ms cold per turn
+        instead of ~1.26 s). The fingerprint guards staleness: a cache built
+        against a different corpus must never be served silently.
+        """
+        import json as _json
+
+        d = Path(cache_dir)
+        d.mkdir(parents=True, exist_ok=True)
+
+        # Fingerprint
+        (d / "fingerprint.txt").write_text(fingerprint.strip() or "none", encoding="utf-8")
+
+        # Lexical — joblib for the sklearn TfidfVectorizer (handles stop_words_
+        # etc), scipy sparse for the matrix
+        try:
+            import joblib as _joblib
+        except ImportError:
+            import pickle as _joblib  # fallback — pickle works for sklearn
+        _joblib.dump(self.lexical._vectorizer, d / "lexical_vectorizer.joblib")
+        from scipy.sparse import save_npz as _save_sparse
+        if self.lexical._matrix is not None:
+            _save_sparse(d / "lexical_matrix.npz", self.lexical._matrix)
+        _json.dump(self.lexical._doc_names, (d / "lexical_doc_names.json").open("w"))
+        _json.dump(self.lexical._doc_terms, (d / "lexical_doc_terms.json").open("w"))
+
+        # Semantic — numpy for the embedding matrix
+        import numpy as _np
+        if self.semantic._doc_embeddings is not None:
+            _np.save(d / "semantic_embeddings.npy", self.semantic._doc_embeddings)
+        _json.dump(self.semantic._doc_names, (d / "semantic_doc_names.json").open("w"))
+
+        # Metadata
+        _json.dump(
+            {
+                "doc_count": self.doc_count,
+                "build_time_ms": self.build_time_ms,
+                "rrf_k": self.rrf_k,
+                "top_k": self.top_k,
+                "operating_point": self.operating_point.to_dict(),
+                "corpus_separability": self.corpus_separability,
+            },
+            (d / "meta.json").open("w"),
+        )
+
+    @classmethod
+    def load(cls, cache_dir: str | Path) -> Index | None:
+        """Load a persisted index, or None if the directory is missing/corrupt.
+
+        A caller that checks the fingerprint before loading is guarding
+        staleness. This method loads whatever is there — the fingerprint
+        gate belongs to the caller.
+        """
+        import json as _json
+
+        d = Path(cache_dir)
+        if not d.is_dir():
+            return None
+
+        required = [
+            "lexical_vectorizer.joblib",
+            "lexical_doc_names.json",
+            "semantic_doc_names.json",
+            "meta.json",
+        ]
+        missing = [f for f in required if not (d / f).exists()]
+        if missing:
+            logger.warning("cache dir %s is missing %s — rebuilding", d, missing)
+            return None
+
+        try:
+            try:
+                import joblib as _joblib
+            except ImportError:
+                import pickle as _joblib
+            vectorizer = _joblib.load(d / "lexical_vectorizer.joblib")
+            lexical_doc_names: list[str] = _json.load((d / "lexical_doc_names.json").open())
+            lexical_doc_terms: list[str] = _json.load((d / "lexical_doc_terms.json").open())
+
+            from scipy.sparse import load_npz as _load_sparse
+            sparse_path = d / "lexical_matrix.npz"
+            if sparse_path.exists():
+                matrix = _load_sparse(str(sparse_path))
+            else:
+                matrix = None
+
+            import numpy as _np
+            emb_path = d / "semantic_embeddings.npy"
+            embeddings = _np.load(emb_path) if emb_path.exists() else None
+            semantic_doc_names: list[str] = _json.load((d / "semantic_doc_names.json").open())
+
+            meta = _json.load((d / "meta.json").open())
+            op_dict = meta.pop("operating_point", {})
+            from oiax.calibration import OperatingPoint
+            operating_point = OperatingPoint.from_dict(op_dict)
+        except Exception as exc:
+            logger.warning("failed to load cached index from %s: %s — rebuilding", d, exc)
+            return None
+
+        lexical = _LexicalScorer()
+        lexical._vectorizer = vectorizer
+        lexical._doc_names = lexical_doc_names
+        lexical._doc_terms = lexical_doc_terms
+        lexical._matrix = matrix
+
+        semantic = _SemanticScorer()
+        semantic._doc_names = semantic_doc_names
+        semantic._doc_embeddings = embeddings
+
+        return cls(
+            lexical=lexical,
+            semantic=semantic,
+            doc_count=meta.get("doc_count", 0),
+            build_time_ms=meta.get("build_time_ms", 0.0),
+            rrf_k=meta.get("rrf_k", RRF_K),
+            top_k=meta.get("top_k", TOP_K),
+            operating_point=operating_point,
+            corpus_separability=meta.get("corpus_separability"),
+        )
+
     def route(self, prompt: str) -> list[RouteHit]:
         """Route a prompt against the index, returning at most ``top_k`` hits.
 
@@ -365,6 +490,7 @@ def build_index(
     sem_threshold: float | None = None,
     rrf_k: int | None = None,
     top_k: int | None = None,
+    cache_dir: str | Path | None = None,
 ) -> Index:
     """Build a routing index from a corpus.
 
@@ -380,11 +506,35 @@ def build_index(
                here, results are flat for k between 10 and 60.
         top_k: Maximum hits returned. Two, because a route is a hint the reader
                must be able to dismiss at a glance — a list of six is not read.
+        cache_dir: Directory to persist and read the built index. A cache hit
+                   serves the pre-built index instantly; a fingerprint mismatch
+                   triggers a rebuild. A stale cache must never be served
+                   silently, so the fingerprint is the only trigger — never an
+                   mtime heuristic on the cache file.
 
     Returns:
         An `Index` ready for `route()` calls. Cold build ~700ms; the
         embedding model is cached process-wide after first load.
     """
+    # ── cache hit? ──────────────────────────────────────────────────────
+    if cache_dir is not None:
+        cache_d = Path(cache_dir)
+        fp = _corpus_fingerprint(corpus)
+        fp_path = cache_d / "fingerprint.txt"
+        known = ""
+        try:
+            if fp_path.exists():
+                known = fp_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            pass
+        if known and known != "none" and known == fp:
+            cached = Index.load(cache_dir)
+            if cached is not None:
+                logger.info("index cache hit: %s (%d docs)", cache_d, cached.doc_count)
+                return cached
+            # Corrupt cache — fingerprint matched but load failed.
+            # Fall through to rebuild.
+
     point = operating_point or SHIPPED
     if operating_point is not None:
         # An EXPLICITLY supplied operating point whose model disagrees with the
@@ -427,7 +577,7 @@ def build_index(
     elapsed = (time.perf_counter() - t0) * 1000
     logger.info("index built: %d docs in %.0fms", len(docs), elapsed)
 
-    return Index(
+    idx = Index(
         lexical=lexical,
         semantic=semantic,
         doc_count=len(docs),
@@ -437,6 +587,40 @@ def build_index(
         operating_point=point,
         corpus_separability=semantic.separability(),
     )
+
+    # ── persist to cache ────────────────────────────────────────────────
+    if cache_dir is not None:
+        fp = _corpus_fingerprint(corpus)
+        try:
+            idx.save(cache_dir, fingerprint=fp)
+            logger.info("index cached: %s (%d docs)", cache_dir, idx.doc_count)
+        except Exception as exc:
+            logger.warning("failed to persist index cache to %s: %s", cache_dir, exc)
+
+    return idx
+
+
+def _corpus_fingerprint(corpus: Corpus) -> str:
+    """Compute a fingerprint for any corpus that lacks one.
+
+    Hashes all documents (name + trigger_line), which is correct for any
+    in-memory corpus. Filesystem-based corpora should implement their own
+    ``fingerprint()`` that includes mtimes.
+    """
+    if hasattr(corpus, "fingerprint"):
+        try:
+            fp = corpus.fingerprint()
+            if fp:
+                return fp
+        except Exception:
+            pass
+    # Fallback for corpora without fingerprint()
+    import hashlib as _hashlib
+    h = _hashlib.sha256()
+    for doc in sorted(corpus.documents(), key=lambda d: d.name):
+        h.update(doc.name.encode())
+        h.update(doc.trigger_line.encode())
+    return h.hexdigest()
 
 
 def route(prompt: str, index: Index | None = None) -> list[RouteHit]:
