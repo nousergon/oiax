@@ -419,3 +419,123 @@ def test_body_scorer_not_in_cache_triggers_rebuild():
 
         idx2 = build_index(corpus, cache_dir=str(cachedir), body_scorer=True)
         assert idx2.body is not None
+
+
+# ── dependency expansion ────────────────────────────────────────────────────
+
+
+def test_document_depends_on_defaults_empty():
+    """A document with no declared dependencies is fine."""
+    doc = Document(name="test", trigger_line="testing", body="body")
+    assert doc.depends_on == []
+
+
+def test_expand_deps_adds_dependency_to_result():
+    """When expand_deps is on, a seed's dependency appears in the result."""
+    from oiax.corpus import Document as Doc
+
+    def _docs():
+        yield Doc(name="deploy", trigger_line="deploying to production",
+                  body="body", depends_on=["audit"])
+        yield Doc(name="audit", trigger_line="quarterly financial auditing",
+                  body="body", depends_on=[])
+        yield Doc(name="other", trigger_line="incident response procedures",
+                  body="body", depends_on=[])
+
+    class DepCorpus:
+        def documents(self):
+            yield from _docs()
+
+    idx = build_index(DepCorpus(), expand_deps=True, expand_budget=4,
+                      sem_threshold=0.30)
+    hits = idx.route("how do I deploy to prod?")
+    names = [h.name for h in hits]
+    assert "deploy" in names
+    assert "audit" in names, f"dependency 'audit' should be in results, got {names}"
+
+
+def test_expand_deps_defaults_off():
+    """Without expand_deps, dependencies are NOT expanded."""
+    from oiax.corpus import Document as Doc
+
+    def _docs():
+        yield Doc(name="deploy", trigger_line="deploying to production",
+                  body="body", depends_on=["audit"])
+        yield Doc(name="audit", trigger_line="quarterly financial auditing",
+                  body="body", depends_on=[])
+        yield Doc(name="other", trigger_line="incident response procedures",
+                  body="body", depends_on=[])
+
+    class DepCorpus:
+        def documents(self):
+            yield from _docs()
+
+    idx = build_index(DepCorpus())
+    hits = idx.route("how do I deploy to prod?")
+    names = [h.name for h in hits]
+    assert "deploy" in names
+    assert "audit" not in names
+
+
+def test_expand_deps_respects_budget():
+    """Expansion stops at expand_budget even if there are more dependencies."""
+    from oiax.corpus import Document as Doc
+
+    def _docs():
+        yield Doc(name="deploy", trigger_line="deploying to production",
+                  body="body", depends_on=["audit", "security"])
+        yield Doc(name="audit", trigger_line="quarterly financial auditing",
+                  body="body", depends_on=[])
+        yield Doc(name="security", trigger_line="security scanning",
+                  body="body", depends_on=[])
+
+    class DepCorpus:
+        def documents(self):
+            yield from _docs()
+
+    idx = build_index(DepCorpus(), expand_deps=True, expand_budget=2,
+                      sem_threshold=0.30)
+    hits = idx.route("how do I deploy to prod?")
+    assert len(hits) <= 2, f"budget=2, got {len(hits)} hits"
+
+
+def test_dep_graph_persists_in_save_load():
+    """Dep graph survives save/load round-trip."""
+    with tempfile.TemporaryDirectory() as tmp:
+        from oiax.corpus import Document as Doc
+
+        def _docs():
+            yield Doc(name="deploy", trigger_line="deploying to production",
+                      body="body", depends_on=["audit"])
+            yield Doc(name="audit", trigger_line="quarterly financial auditing",
+                      body="body", depends_on=[])
+
+        class DepCorpus:
+            def documents(self):
+                yield from _docs()
+
+        idx = build_index(DepCorpus(), expand_deps=True)
+        cachedir = Path(tmp) / "cache"
+        idx.save(cachedir, fingerprint="test")
+        loaded = Index.load(cachedir)
+        assert loaded is not None
+        assert loaded._dep_graph == {"deploy": ["audit"]}
+        assert loaded.expand_deps is True
+
+
+def test_policy_dir_corpus_parses_depends_on():
+    """**Depends-on:** in a markdown file is extracted into depends_on."""
+    with tempfile.TemporaryDirectory() as tmp:
+        md = Path(tmp) / "deploy.md"
+        md.write_text(
+            "**Agent-trigger:** deploying to production\n"
+            "**Depends-on:** test-policy, security-policy\n"
+            "**Requires:** audit-policy\n\n"
+            "Body text.\n"
+        )
+        corpus = PolicyDirCorpus(str(tmp))
+        docs = list(corpus.documents())
+        deploy = next(d for d in docs if d.name == "deploy")
+        assert "test-policy" in deploy.depends_on
+        assert "security-policy" in deploy.depends_on
+        assert "audit-policy" in deploy.depends_on

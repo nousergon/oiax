@@ -626,6 +626,20 @@ def main(argv: list[str] | None = None) -> int:
         default=False,
         help="enable the body-scorer measurement arm (default: off)",
     )
+    parser.add_argument(
+        "--expand-deps",
+        action="store_true",
+        dest="expand_deps",
+        default=False,
+        help="expand routes along Document.depends_on edges (default: off)",
+    )
+    parser.add_argument(
+        "--expand-budget",
+        type=int,
+        dest="expand_budget",
+        default=4,
+        help="max total documents when expanding deps (default: 4)",
+    )
     parsed = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
     if parsed.command == "arms":
@@ -656,6 +670,9 @@ def main(argv: list[str] | None = None) -> int:
     extra_kwargs: dict[str, Any] = {}
     if parsed.body_scorer:
         extra_kwargs["body_scorer"] = True
+    if parsed.expand_deps:
+        extra_kwargs["expand_deps"] = True
+        extra_kwargs["expand_budget"] = parsed.expand_budget
 
     if parsed.command == "sweep":
         print_sweep(parsed.corpus_dir, items, **extra_kwargs)
