@@ -9,7 +9,6 @@ one document per file, the trigger line describing when the document applies.
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path

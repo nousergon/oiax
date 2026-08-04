@@ -201,7 +201,7 @@ import oiax                       630 ms   # numpy, scikit-learn, fastembed
 model load from cache             215 ms
 index build                        37 ms
 route() warm                      3.5 ms
-total per-turn (in-process)       885 ms
+total (in-process)       885 ms
 
 cache hit (index from disk)         3 ms   # fingerprint-matched, skips build
 ```

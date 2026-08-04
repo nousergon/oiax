@@ -96,7 +96,8 @@ def main() -> int:
     print(f"{'model load from cache':<30} {model_load_ms:6.0f} ms")
     print(f"{'index build':<30} {build_ms:6.0f} ms")
     print(f"{'route() warm':<30} {route_ms:6.1f} ms")
-    print(f"{'total per-turn (in-process)':<30} {import_ms + model_load_ms + build_ms + route_ms:6.0f} ms")
+    total_ms = import_ms + model_load_ms + build_ms + route_ms
+    print(f"{'total (in-process)':<30} {total_ms:6.0f} ms")
     print(f"{'cache hit (index from disk)':<30} {cache_hit_ms:6.0f} ms")
     print()
     print("`import oiax` pulls numpy, scikit-learn, and fastembed. It dominates")
