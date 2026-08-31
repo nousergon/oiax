@@ -92,6 +92,7 @@ def build_server(
     "no policy governs this" from it.
     """
     from mcp.server.mcpserver import MCPServer
+    from mcp.server.mcpserver.exceptions import ToolError
 
     corpus = PolicyDirCorpus(corpus_dir)
     documents = {doc.name: doc for doc in corpus.documents()}
@@ -134,7 +135,21 @@ def build_server(
         document: Document | None = documents.get(name)
         if document is None:
             known = ", ".join(sorted(documents)) or "(none)"
-            raise ValueError(f"unknown policy {name!r}. Available: {known}")
+            # ToolError, NOT a bare exception. From mcp 2.0 the SDK splits
+            # deliberate tool errors from crashes and DISCARDS the message of
+            # anything that is not a ToolError: tools/base.py raises
+            # `ToolError(f"Error executing tool {name}: {exc}")` for the former
+            # but `UnexpectedToolError(f"Error executing tool {name}")` for the
+            # latter, deliberately, so an unexpected crash cannot leak internals
+            # to the client. A ValueError here is "unexpected" by that
+            # definition, so the list of available policies — the agent's whole
+            # recovery path — never reached the caller.
+            #
+            # An unknown policy name is not a crash. It is an expected outcome
+            # whose text IS the interface: without the available-names list the
+            # agent has no way to correct its own call, and "Error executing
+            # tool get_policy" reads as a broken server rather than a typo.
+            raise ToolError(f"unknown policy {name!r}. Available: {known}")
         return f"# {document.name}\n\n**Agent-trigger:** {document.trigger_line}\n\n{document.body}"
 
     return server

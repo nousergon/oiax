@@ -203,3 +203,57 @@ def test_warm_calls_are_fast(server):
 
     per_call = anyio.run(run)
     assert per_call < 0.050, f"warm route_policies took {per_call * 1000:.0f} ms per call"
+
+
+# ── the error surface is part of the interface ──────────────────────────────
+
+
+def test_every_tool_raises_ToolError_so_its_message_survives_to_the_caller():
+    """A deliberate tool error must be raised as ToolError, never a bare exception.
+
+    From mcp 2.0 the SDK splits deliberate tool errors from crashes and DISCARDS
+    the message of anything that is not a `ToolError`
+    (`mcp/server/mcpserver/tools/base.py`): `ToolError(f"Error executing tool
+    {name}: {exc}")` for the former, but `UnexpectedToolError(f"Error executing
+    tool {name}")` for the latter — deliberately, so an unexpected crash cannot
+    leak internals to the client.
+
+    That makes the choice of exception class a public-interface decision, and it
+    fails silently: the tool still errors, the test still sees `is_error`, and
+    only the *text* an agent needs to correct its own call disappears. This
+    guard is AST-level rather than behavioural on purpose — it holds for tools
+    added later, which a per-tool round-trip test would not cover.
+    """
+    import ast
+    import inspect
+
+    import oiax.adapters.mcp as adapter
+
+    tree = ast.parse(inspect.getsource(adapter))
+
+    def _is_tool(fn):
+        for dec in fn.decorator_list:
+            call = dec.func if isinstance(dec, ast.Call) else dec
+            if isinstance(call, ast.Attribute) and call.attr == "tool":
+                return True
+        return False
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not _is_tool(node):
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Raise) or inner.exc is None:
+                continue
+            exc = inner.exc.func if isinstance(inner.exc, ast.Call) else inner.exc
+            name = getattr(exc, "id", None) or getattr(exc, "attr", None)
+            if name != "ToolError":
+                offenders.append(f"{node.name}() raises {name} at line {inner.lineno}")
+
+    assert not offenders, (
+        "a tool raised something other than ToolError, so mcp>=2.0 will replace "
+        "its message with the bare 'Error executing tool <name>' mask and the "
+        "caller loses its whole recovery path: " + "; ".join(offenders)
+    )
