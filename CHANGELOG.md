@@ -116,6 +116,13 @@ While the major version is `0`, the public API may change between minor versions
 
 ### Changed
 
+- `PolicyDirCorpus` skips a document whose header `**Status:**` begins with
+  `Retired`, `Draft`, `Superseded`, `Deprecated` or `Withdrawn`
+  (`INACTIVE_STATUSES`, overridable per corpus). Before, any `.md` with an
+  `**Agent-trigger:**` line routed, so a draft successor landed ahead of its
+  predecessors' retirement routed alongside them. A document with no `Status:`
+  line still loads. The status is read from the header only and is part of the
+  fingerprint.
 - CI enforces a coverage floor (`--cov-fail-under=70`, measured 75%) instead of
   measuring coverage and discarding the number.
 - `publish.yml` creates the `v<version>` tag and GitHub Release alongside the PyPI
