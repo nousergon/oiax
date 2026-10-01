@@ -9,6 +9,7 @@ one document per file, the trigger line describing when the document applies.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,24 +52,59 @@ class Corpus(Protocol):
         ...
 
 
+#: ``**Status:**`` values (matched as a leading word, case-insensitive) that
+#: mean a document does not govern. A retired policy left in place, or a draft
+#: successor landed ahead of the retirement that activates it, must not be
+#: routed: routing it puts two documents behind one rule, and the reader cannot
+#: tell which binds.
+INACTIVE_STATUSES: tuple[str, ...] = ("retired", "draft", "superseded", "deprecated", "withdrawn")
+
+_STATUS = re.compile(r"\*\*Status:\*\*\s*([^\n]*)")
+
+
+def document_status(text: str) -> str:
+    """The header ``**Status:**`` value, or ``""`` when the header has none.
+
+    Only the header is read — the text before the first ``## `` heading — so a
+    body sentence quoting the marker cannot change whether a document routes.
+    """
+    header = text.split("\n## ", 1)[0]
+    m = _STATUS.search(header)
+    return m.group(1).strip() if m else ""
+
+
 class PolicyDirCorpus:
     """Reads markdown files with `**Agent-trigger:**` headers from a directory.
 
     One document per `.md` file. Each file carries a `**Agent-trigger:**`
     line, and the text after the colon is the
     trigger_line. The filename (without extension) is the document `name`.
+
+    A file whose header ``**Status:**`` begins with one of ``inactive_statuses``
+    (default `INACTIVE_STATUSES`) is skipped. A file with no ``**Status:**``
+    line is loaded, so a corpus that never declares status is unaffected.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(
+        self,
+        path: str | Path,
+        *,
+        inactive_statuses: tuple[str, ...] = INACTIVE_STATUSES,
+    ) -> None:
         self._path = Path(path)
+        self._inactive = tuple(s.lower() for s in inactive_statuses)
 
     def documents(self) -> Iterator[Document]:
         if not self._path.is_dir():
             return
         for md_file in sorted(self._path.glob("*.md")):
             doc = self._load_doc(md_file)
-            if doc is not None:
+            if doc is not None and not self._is_inactive(doc.body):
                 yield doc
+
+    def _is_inactive(self, text: str) -> bool:
+        words = document_status(text).lower().split()
+        return bool(words) and words[0].strip("(:,") in self._inactive
 
     def fingerprint(self) -> str:
         """Content hash over file names, mtimes and trigger lines.
@@ -84,6 +120,7 @@ class PolicyDirCorpus:
             doc = self._load_doc(md_file)
             if doc is not None:
                 h.update(doc.trigger_line.encode())
+                h.update(document_status(doc.body).encode())
         return h.hexdigest()
 
     @staticmethod
