@@ -6,6 +6,16 @@ All notable changes to oiax are recorded here. Versions follow
 
 While the major version is `0`, the public API may change between minor versions.
 
+## [0.3.2] — 2026-10-02
+
+### Fixed
+
+- `oiax.__version__` is now read from the installed distribution's metadata, so it
+  can no longer disagree with `pyproject.toml`. The hardcoded string had stayed at
+  `"0.2.0"` through every 0.3.x release, which meant any check comparing an
+  installed router against the latest release read the wrong version.
+  `tests/test_version.py` asserts both halves.
+
 ## [0.3.1] — 2026-08-03
 
 ### Changed
