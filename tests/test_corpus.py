@@ -99,3 +99,19 @@ def test_fingerprint_changes_when_status_changes():
         import os
         os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))
         assert PolicyDirCorpus(tmp).fingerprint() != before
+
+
+def test_first_agent_trigger_marker_is_the_header():
+    """A body sentence that mentions the marker must not replace the header.
+
+    Measured on a real policy library: one policy's body said every policy
+    carries an `**Agent-trigger:**` header line, the loader kept the LAST
+    occurrence, and that policy routed on a fragment of its own prose.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / "p.md").write_text(
+            "# P\n\n**Agent-trigger:** the real header\n\n"
+            "## Body\n\n- Every document carries an `**Agent-trigger:**` line.\n"
+        )
+        docs = list(PolicyDirCorpus(tmp).documents())
+        assert docs[0].trigger_line == "the real header"
