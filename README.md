@@ -188,6 +188,10 @@ so the semantic half never fired and recall sat at 0.185. Rank fusion is scale-f
 Defaults are calibrated, not chosen: `src/oiax/eval/corpora/README.md` records the
 sweep, the operating point, and what it was picked over.
 
+The rules above (index identity, rank fusion, model id validation and where defaults
+live) are stated normatively in [`docs/routing-contract.md`](docs/routing-contract.md),
+with the code and tests that enforce each one.
+
 ## Performance
 
 The warm-route claim and the per-turn delivered cost are **not the same number**.
