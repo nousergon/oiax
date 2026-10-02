@@ -134,7 +134,11 @@ class PolicyDirCorpus:
         depends_on: list[str] = []
         family = ''
         for line in text.splitlines():
-            if "**Agent-trigger:**" in line:
+            # The FIRST marker is the header. A later one is a body sentence
+            # that mentions the marker (a policy about writing trigger lines
+            # does exactly this), and letting it win replaced a document's
+            # whole routing surface with a fragment of prose, silently.
+            if not trigger_line and "**Agent-trigger:**" in line:
                 _, sep, after = line.partition("**Agent-trigger:**")
                 if sep:
                     trigger_line = after.strip()
