@@ -1,0 +1,57 @@
+name: pip-audit
+
+# Blocking dependency-vulnerability gate on oiax's declared Python
+# dependencies, modelled on scannerctl's and nousergon-lib's pip-audit.yml
+# (fleet standard alpha-engine-config#2530). Closes the conformance finding
+# alpha-engine-config#6247 (policy `pip-audit-blocking`).
+#
+# Blocking means blocking: no `continue-on-error`, no `|| true`. A finding with
+# no fix release is handled with `--ignore-vuln <ID>` on the invocation and a
+# dated reason comment beside it, never by softening the step.
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+  schedule:
+    # Daily at 14:00 UTC, the fleet cadence: advisories publish on a rolling
+    # basis, so an unchanged tree can turn red between pushes. Public repo:
+    # these minutes are not billed.
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.13"
+
+      - name: Install pip-audit
+        run: python -m pip install --disable-pip-version-check pip-audit
+
+      - name: Audit runtime dependencies
+        # `pip-audit .` resolves the base `dependencies` of pyproject.toml:
+        # what `pip install oiax` brings (fastembed, scikit-learn and their
+        # transitives).
+        run: pip-audit --strict .
+
+      - name: Audit optional extras (mcp, dev)
+        # `pip-audit .` does not read extras. The `mcp` extra ships to users
+        # (`pip install oiax[mcp]`), and `dev` is the CI toolchain, so audit
+        # both as one requirements file with transitives resolved.
+        run: |
+          python - <<'PY' > "$RUNNER_TEMP/extras-requirements.txt"
+          import tomllib
+          with open("pyproject.toml", "rb") as fh:
+              extras = tomllib.load(fh)["project"]["optional-dependencies"]
+          print("\n".join(d for name in sorted(extras) for d in extras[name]))
+          PY
+          cat "$RUNNER_TEMP/extras-requirements.txt"
+          pip-audit --strict -r "$RUNNER_TEMP/extras-requirements.txt"
