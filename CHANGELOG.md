@@ -124,6 +124,16 @@ While the major version is `0`, the public API may change between minor versions
 
 ## [Unreleased]
 
+### Fixed
+
+- The index cache key now covers every routing-stage option (`body_scorer`,
+  `expand_deps`, `expand_budget`, `representative`) and the operating point the
+  index carries, and a loaded cache whose stages differ from the request is
+  rebuilt (oiax#67). Before, a cache built with a stage off was served to a
+  caller asking for it on. The fallback corpus fingerprint also hashes body,
+  `depends_on` and `family`. The fingerprint version moved, so every existing
+  cache rebuilds once.
+
 ### Changed
 
 - `PolicyDirCorpus` skips a document whose header `**Status:**` begins with
