@@ -753,3 +753,123 @@ def test_representative_save_load_roundtrip():
         assert loaded is not None
         assert loaded._family_map == {"deploy": "deploy"}
         assert loaded.representative is True
+
+
+# ── oiax#67: every routing-stage option is part of the cache key ─────────────
+
+_STAGE_OPTIONS = [
+    {"expand_deps": True},
+    {"expand_budget": 7},
+    {"representative": True},
+    {"body_scorer": True},
+]
+
+
+def _stage_corpus() -> _FakeCorpus:
+    return _FakeCorpus([
+        Document(name="deploy", trigger_line="deploying to production", body="b",
+                 depends_on=["security"], family="ops"),
+        Document(name="security", trigger_line="security vulnerability scanning", body="b",
+                 family="ops"),
+    ])
+
+
+def test_each_stage_option_independently_invalidates_the_cache():
+    """A cache built with every stage off is never served to a caller asking
+    for any one of them on; the rebuilt index carries the requested stage."""
+    set_embedder(_FakeEmbedder("model-a"))
+    try:
+        for option in _STAGE_OPTIONS:
+            with tempfile.TemporaryDirectory() as tmp:
+                cachedir = str(Path(tmp) / "cache")
+                build_index(_stage_corpus(), cache_dir=cachedir)
+                with mock.patch.object(Index, "load") as spy_load:
+                    idx = build_index(_stage_corpus(), cache_dir=cachedir, **option)
+                    spy_load.assert_not_called()
+                (name, value), = option.items()
+                actual = idx.body is not None if name == "body_scorer" else getattr(idx, name)
+                assert actual == value, name
+    finally:
+        set_embedder(None)
+
+
+def test_the_issue_probe_returns_the_requested_stages():
+    """The audit's probe: cached False/False/4, requested True/True/7."""
+    set_embedder(_FakeEmbedder("model-a"))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cachedir = str(Path(tmp) / "cache")
+            build_index(_stage_corpus(), cache_dir=cachedir)
+            idx = build_index(
+                _stage_corpus(), cache_dir=cachedir,
+                expand_deps=True, representative=True, expand_budget=7,
+            )
+            assert (idx.expand_deps, idx.representative, idx.expand_budget) == (True, True, 7)
+            assert idx._dep_graph == {"deploy": ["security"]}
+    finally:
+        set_embedder(None)
+
+
+def test_identical_stage_options_still_hit_the_cache():
+    set_embedder(_FakeEmbedder("model-a"))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cachedir = str(Path(tmp) / "cache")
+            opts = {"expand_deps": True, "expand_budget": 7, "representative": True}
+            first = build_index(_stage_corpus(), cache_dir=cachedir, **opts)
+            with mock.patch.object(Index, "load", wraps=Index.load) as spy_load:
+                again = build_index(_stage_corpus(), cache_dir=cachedir, **opts)
+                spy_load.assert_called_once()
+            assert again.route("deploying to production") == first.route(
+                "deploying to production"
+            )
+    finally:
+        set_embedder(None)
+
+
+def test_loaded_metadata_that_disagrees_with_the_request_is_rebuilt():
+    """Second guard: even under a matching fingerprint file, a loaded index
+    whose stages differ from the request is never served."""
+    set_embedder(_FakeEmbedder("model-a"))
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            cachedir = str(Path(tmp) / "cache")
+            build_index(_stage_corpus(), cache_dir=cachedir, expand_deps=True)
+            stale = build_index(_stage_corpus())  # built with every stage off
+            with mock.patch.object(Index, "load", return_value=stale):
+                idx = build_index(_stage_corpus(), cache_dir=cachedir, expand_deps=True)
+            assert idx is not stale and idx.expand_deps is True
+    finally:
+        set_embedder(None)
+
+
+def test_operating_point_identity_is_part_of_the_cache_key():
+    from dataclasses import replace
+
+    from oiax.calibration import SHIPPED
+    from oiax.router import _index_fingerprint
+
+    set_embedder(_FakeEmbedder("model-a"))
+    try:
+        common = {"lex_threshold": 0.1, "sem_threshold": 0.2, "rrf_k": 60, "top_k": 2}
+        a = _index_fingerprint(_stage_corpus(), operating_point=SHIPPED, **common)
+        b = _index_fingerprint(
+            _stage_corpus(), operating_point=replace(SHIPPED, arm_id="other-arm"), **common
+        )
+        assert a != b
+    finally:
+        set_embedder(None)
+
+
+def test_fallback_corpus_fingerprint_covers_body_dependencies_and_family():
+    from oiax.router import _corpus_fingerprint
+
+    base = Document(name="a", trigger_line="t", body="b", depends_on=["x"], family="f")
+    fp = _corpus_fingerprint(_FakeCorpus([base]))
+    for changed in (
+        Document(name="a", trigger_line="t", body="B", depends_on=["x"], family="f"),
+        Document(name="a", trigger_line="t", body="b", depends_on=["y"], family="f"),
+        Document(name="a", trigger_line="t", body="b", depends_on=["x"], family="g"),
+    ):
+        assert _corpus_fingerprint(_FakeCorpus([changed])) != fp
+    assert _corpus_fingerprint(_FakeCorpus([base])) == fp

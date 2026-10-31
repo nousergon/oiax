@@ -44,6 +44,7 @@ refactored against the oiax product contract.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import time
@@ -724,6 +725,11 @@ def build_index(
             sem_threshold=sem_threshold,
             rrf_k=rrf_k,
             top_k=top_k,
+            operating_point=point,
+            body_scorer=body_scorer,
+            expand_deps=expand_deps,
+            expand_budget=expand_budget,
+            representative=representative,
         )
         fp_path = cache_d / "fingerprint.txt"
         known = ""
@@ -735,10 +741,19 @@ def build_index(
         if known and known != "none" and known == fp:
             cached = Index.load(cache_dir)
             if cached is not None:
-                # A cache built without body_scorer cannot serve a caller
-                # asking for it — the body embeddings don't exist on disk.
-                if body_scorer and cached.body is None:
-                    logger.info("cache hit but body scorer not in cache — rebuilding")
+                # The fingerprint covers every stage option (oiax#67), but the
+                # loaded metadata is checked against the request as well: a
+                # cache must never serve a configuration it was not built
+                # under, whatever wrote the fingerprint file.
+                mismatch = _stage_mismatch(
+                    cached,
+                    body_scorer=body_scorer,
+                    expand_deps=expand_deps,
+                    expand_budget=expand_budget,
+                    representative=representative,
+                )
+                if mismatch:
+                    logger.info("cache hit but %s differs from the request — rebuilding", mismatch)
                 else:
                     logger.info("index cache hit: %s (%d docs)", cache_d, cached.doc_count)
                     return cached
@@ -803,6 +818,11 @@ def build_index(
             sem_threshold=sem_threshold,
             rrf_k=rrf_k,
             top_k=top_k,
+            operating_point=point,
+            body_scorer=body_scorer,
+            expand_deps=expand_deps,
+            expand_budget=expand_budget,
+            representative=representative,
         )
         try:
             idx.save(cache_dir, fingerprint=fp)
@@ -813,12 +833,37 @@ def build_index(
     return idx
 
 
+def _stage_mismatch(
+    cached: Index,
+    *,
+    body_scorer: bool,
+    expand_deps: bool,
+    expand_budget: int,
+    representative: bool,
+) -> str:
+    """The first routing-stage option on which ``cached`` differs from the
+    request, or ``""`` when it was built under exactly the requested stages."""
+    if (cached.body is not None) != bool(body_scorer):
+        return "body_scorer"
+    if cached.expand_deps != bool(expand_deps):
+        return "expand_deps"
+    if cached.expand_budget != int(expand_budget):
+        return "expand_budget"
+    if cached.representative != bool(representative):
+        return "representative"
+    return ""
+
+
 def _corpus_fingerprint(corpus: Corpus) -> str:
     """Compute a fingerprint for any corpus that lacks one.
 
-    Hashes all documents (name + trigger_line), which is correct for any
-    in-memory corpus. Filesystem-based corpora should implement their own
-    ``fingerprint()`` that includes mtimes.
+    Hashes every document field a routing stage reads -- name, trigger line,
+    body (the body scorer), ``depends_on`` (dependency expansion) and
+    ``family`` (representative selection) -- which is correct for any
+    in-memory corpus. Before oiax#67 only name and trigger line were hashed,
+    so a body, dependency or family edit was served from a stale cache.
+    Filesystem-based corpora should implement their own ``fingerprint()``
+    that includes mtimes.
     """
     if hasattr(corpus, "fingerprint"):
         try:
@@ -831,9 +876,22 @@ def _corpus_fingerprint(corpus: Corpus) -> str:
     import hashlib as _hashlib
     h = _hashlib.sha256()
     for doc in sorted(corpus.documents(), key=lambda d: d.name):
-        h.update(doc.name.encode())
-        h.update(doc.trigger_line.encode())
+        for part in (
+            doc.name,
+            doc.trigger_line,
+            doc.body,
+            "\x1f".join(doc.depends_on),
+            doc.family,
+        ):
+            # Length-prefixed, so moving text between fields changes the hash.
+            data = part.encode()
+            h.update(str(len(data)).encode() + b":" + data)
     return h.hexdigest()
+
+
+#: Bumped whenever `_index_fingerprint` starts covering a new input, so every
+#: cache written under the narrower fingerprint misses once and is rebuilt.
+_INDEX_FINGERPRINT_VERSION = "2"
 
 
 def _index_fingerprint(
@@ -843,11 +901,23 @@ def _index_fingerprint(
     sem_threshold: float,
     rrf_k: int,
     top_k: int,
+    operating_point: OperatingPoint | None = None,
+    body_scorer: bool = False,
+    expand_deps: bool = False,
+    expand_budget: int = 4,
+    representative: bool = False,
 ) -> str:
     """Fingerprint over corpus content AND the configuration the index is
-    built under: embedding model id, embedding dimension, and the active
+    built under: embedding model id, embedding dimension, the active
     selection thresholds (lexical/semantic admission floors, RRF constant,
-    top-k cap).
+    top-k cap), the calibrated operating point the index carries, and every
+    routing-stage option (body scorer, dependency expansion and its budget,
+    representative selection).
+
+    The stage options were missing until oiax#67: a cache built with
+    ``expand_deps=False`` was served to a caller asking for ``True``, and the
+    returned index silently ran without the stage -- less policy context than
+    requested, looking like a valid cache.
 
     `_corpus_fingerprint()` alone only guards against a *corpus* change — a
     persisted cache built under one embedding model or one set of thresholds
@@ -874,6 +944,19 @@ def _index_fingerprint(
     h.update(str(int(rrf_k)).encode())
     h.update(b"\x00top_k=")
     h.update(str(int(top_k)).encode())
+    h.update(b"\x00version=" + _INDEX_FINGERPRINT_VERSION.encode())
+    h.update(b"\x00operating_point=")
+    h.update(
+        json.dumps(
+            operating_point.to_dict() if operating_point is not None else None,
+            sort_keys=True,
+            default=str,
+        ).encode()
+    )
+    h.update(b"\x00body_scorer=" + str(bool(body_scorer)).encode())
+    h.update(b"\x00expand_deps=" + str(bool(expand_deps)).encode())
+    h.update(b"\x00expand_budget=" + str(int(expand_budget)).encode())
+    h.update(b"\x00representative=" + str(bool(representative)).encode())
     return h.hexdigest()
 
 
